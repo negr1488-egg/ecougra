@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gold: #FFAA00;
+  --gold-soft: #FFC857;
+  --cyan: #22D3EE;
+  --emerald: #00C853;
+  --emerald-soft: #34D399;
+  --text: #F2F4F8;
+  --mid: #8A93A6;
+  --lo: #4A5464;
+  --line: rgba(255, 255, 255, 0.05);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+  background-color: #050810;
+}
+
+html, body {
+  background-color: #050810;
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'tnum';
+  overflow-x: hidden;
+}
+
+/* Фирменный надзаголовок секции (как на ugra-oil.vercel.app) */
+.eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 5px;
+  text-transform: uppercase;
+  color: var(--gold);
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.eyebrow::before {
+  content: '';
+  width: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold));
+}
+
+.eyebrow-emerald {
+  color: var(--emerald-soft);
+}
+.eyebrow-emerald::before {
+  background: linear-gradient(90deg, transparent, var(--emerald-soft));
+}
+
+.eyebrow-cyan {
+  color: var(--cyan);
+}
+.eyebrow-cyan::before {
+  background: linear-gradient(90deg, transparent, var(--cyan));
+}
+
+/* Архитектурная 1px сетка */
+.arch-grid {
+  background-color: var(--line);
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.arch-card {
+  background-color: #050810;
+  position: relative;
+  transition: background-color 0.45s var(--ease);
+}
+
+.arch-card:hover {
+  background-color: #08090f;
+}
+
+.arch-card-top-line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.45s var(--ease);
+}
+
+.arch-card-top-line:hover::before {
+  opacity: 1;
+}
+
+/* Текстура кинематографического зерна */
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+  opacity: 0.025;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Кастомные ползунки range */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.07);
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 0px;
+  transform: rotate(45deg);
+  background: var(--gold);
+  cursor: pointer;
+  border: 2px solid #050810;
+  box-shadow: 0 0 12px var(--gold);
+  transition: transform 0.2s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: rotate(45deg) scale(1.2);
+}
+
+/* Кастомный скроллбар */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #050810;
+}
+::-webkit-scrollbar-thumb {
+  background: #1c2333;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #FFAA00;
+}
+
+/* Стилизация карты Leaflet */
+.leaflet-container {
+  background: #050810 !important;
+  font-family: 'Inter', sans-serif !important;
+}
+.leaflet-popup-content-wrapper {
+  background: rgba(5, 8, 16, 0.96) !important;
+  color: #F2F4F8 !important;
+  border: 1px solid rgba(255, 170, 0, 0.35) !important;
+  border-radius: 4px !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9) !important;
+  backdrop-filter: blur(16px);
+}
+.leaflet-popup-tip {
+  background: rgba(5, 8, 16, 0.96) !important;
+}
