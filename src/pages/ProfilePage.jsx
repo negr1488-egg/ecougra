@@ -4,11 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, uploadFileToStorage } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { Card, Button, Input, Avatar, Badge, Skeleton, useToast } from '../components/ui/DesignSystem';
-import { FileDown, UserCheck, MessageSquare, Lock, Clock } from 'lucide-react';
+import { FileDown, UserCheck, MessageSquare, Lock, Clock, LogOut } from 'lucide-react';
 
 export default function ProfilePage() {
   const { username: routeUsername } = useParams();
-  const { user, profile: myProfile, refreshProfile } = useAuth();
+  const { user, profile: myProfile, refreshProfile, signOut } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -17,27 +17,29 @@ export default function ProfilePage() {
   const [editBio, setEditBio] = useState('');
   const [isEditing, setIsEditing] = useState(false);
 
-  // Определение целевого пользователя (поиск без учета @ и регистра)
   const cleanRoute = (routeUsername || '').replace('@', '').trim().toLowerCase();
-  const cleanMy = (myProfile?.username || '').replace('@', '').trim().toLowerCase();
-  const isOwnProfile = !routeUsername || cleanRoute === cleanMy;
+  const isOwnProfile = !routeUsername || (myProfile?.username && cleanRoute === myProfile.username.replace('@', '').toLowerCase());
 
-  const { data: profileData, isLoading } = useQuery({
-    queryKey: ['profile_view', routeUsername, myProfile?.username],
-    enabled: Boolean(routeUsername || myProfile?.username),
+  const { data: profileData, isLoading, refetch } = useQuery({
+    queryKey: ['profile_view', routeUsername, user?.id, myProfile?.username],
+    enabled: Boolean(user?.id || routeUsername),
     queryFn: async () => {
-      const rawSearch = (routeUsername || myProfile?.username || '').replace('@', '').trim().toLowerCase();
-
-      // Запрос профиля: ищет совпадение как с префиксом @, так и без него
-      const { data: prof, error } = await supabase
+      let query = supabase
         .from('profiles')
-        .select('*, organizations(name, type, city), user_roles(roles(name))')
-        .or(`username.ilike.@${rawSearch},username.ilike.${rawSearch}`)
-        .maybeSingle();
+        .select('*, organizations(name, type, city), user_roles(roles(name))');
+
+      // Если в URL нет имени, ищем СТРОГО по ID текущего пользователя
+      if (!routeUsername && user?.id) {
+        query = query.eq('id', user.id);
+      } else {
+        const rawSearch = cleanRoute;
+        query = query.or(`username.ilike.@${rawSearch},username.ilike.${rawSearch}`);
+      }
+
+      const { data: prof, error } = await query.maybeSingle();
 
       if (error || !prof) return null;
 
-      // Параллельная загрузка логов активности и связей наставничества
       const [logsRes, mentorsRes] = await Promise.all([
         supabase
           .from('activity_log')
@@ -107,7 +109,7 @@ export default function ProfilePage() {
       await supabase.from('notifications').insert([{
         user_id: mentorProf.id,
         type: 'mentor_request',
-        payload: { preview: `Запрос на наставничество от ${myProfile?.username}` }
+        payload: { preview: `Запрос на наставничество от ${myProfile?.username || 'пользователя'}` }
       }]);
     },
     onSuccess: () => {
@@ -128,11 +130,17 @@ export default function ProfilePage() {
 
   if (!profileData?.prof) {
     return (
-      <Card className="p-8 text-center space-y-3 font-mono text-xs text-[#8A93A6]">
-        <div>Профиль пользователя не найден в базе данных.</div>
-        <Button size="sm" variant="outline" onClick={() => navigate('/profile')}>
-          Перейти в свой профиль
-        </Button>
+      <Card className="p-8 text-center space-y-4 font-mono text-xs text-[#8A93A6]">
+        <div className="text-white text-base">Профиль пользователя не найден в базе данных</div>
+        <p>Возможно, вы вошли под новой учётной записью, для которой ещё не создана карточка исследователя.</p>
+        <div className="flex justify-center gap-3 pt-2">
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Повторить запрос
+          </Button>
+          <Button size="sm" variant="danger" onClick={() => signOut()}>
+            <LogOut size={13} /> Выйти и войти заново
+          </Button>
+        </div>
       </Card>
     );
   }
@@ -154,7 +162,6 @@ export default function ProfilePage() {
 
   return (
     <div className="space-y-8 print:bg-white print:text-black">
-      {/* КАРТОЧКА ПРОФИЛЯ */}
       <Card className="p-8">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center gap-5">
@@ -184,7 +191,6 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          {/* Действия */}
           <div className="flex flex-wrap gap-2 print:hidden">
             {isOwnProfile ? (
               <>
@@ -221,7 +227,6 @@ export default function ProfilePage() {
           {prof.bio || 'Исследователь экологических и производственных технологий ХМАО-Югры.'}
         </p>
 
-        {/* Форма редактирования информации и приватности */}
         {isOwnProfile && isEditing && (
           <div className="mt-6 pt-6 border-t border-white/10 space-y-4 print:hidden">
             <Input label="О себе (Bio)" value={editBio} onChange={(e) => setEditBio(e.target.value)} />
@@ -249,7 +254,6 @@ export default function ProfilePage() {
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* СВЯЗИ НАСТАВНИЧЕСТВА (mentor_links) */}
         <Card className="lg:col-span-5 space-y-4">
           <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00]">
             Система наставничества
@@ -292,7 +296,6 @@ export default function ProfilePage() {
           </div>
         </Card>
 
-        {/* ТАЙМЛАЙН ДЕЙСТВИЙ (activity_log) */}
         <Card className="lg:col-span-7 space-y-4">
           <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center gap-2">
             <Clock size={14} /> Журнал активности исследователя
