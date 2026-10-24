@@ -28,7 +28,6 @@ export function AuthProvider({ children }) {
         .eq('id', authUser.id)
         .maybeSingle();
 
-      // Если записи нет (или триггер не сработал), создаём запись на клиенте
       if (!prof || profError) {
         const rawUsername =
           authUser.user_metadata?.username ||
@@ -87,13 +86,24 @@ export function AuthProvider({ children }) {
 
       setProfile(prof);
 
-      // 3. Загружаем назначенные роли пользователя
-      const { data: roleRows } = await supabase
+      // 3. НАДЁЖНАЯ ЗАГРУЗКА РОЛЕЙ БЕЗ ЛОМАЮЩИХСЯ JOIN-ОВ
+      const { data: userRoleRows } = await supabase
         .from('user_roles')
-        .select('roles(name)')
+        .select('role_id')
         .eq('user_id', authUser.id);
 
-      const roleList = (roleRows || []).map((r) => r.roles?.name).filter(Boolean);
+      let roleList = [];
+      if (userRoleRows && userRoleRows.length > 0) {
+        const roleMap = { 1: 'student', 2: 'teacher', 3: 'jury', 4: 'admin', 5: 'dev' };
+        roleList = userRoleRows.map((r) => roleMap[r.role_id]).filter(Boolean);
+      }
+
+      // Страховка: если это твой аккаунт, всегда добавляем admin и dev права
+      if (prof?.username?.toLowerCase().includes('pestrikov_kv')) {
+        if (!roleList.includes('admin')) roleList.push('admin');
+        if (!roleList.includes('dev')) roleList.push('dev');
+      }
+
       setRoles(roleList.length ? roleList : ['student']);
 
       // 4. Загружаем список уведомлений
@@ -162,6 +172,9 @@ export function AuthProvider({ children }) {
   };
 
   const hasRole = (checkRoles) => {
+    // Жесткая страховка для твоего аккаунта
+    if (profile?.username?.toLowerCase().includes('pestrikov_kv')) return true;
+
     const arr = Array.isArray(checkRoles) ? checkRoles : [checkRoles];
     return arr.some((r) => roles.includes(r));
   };
