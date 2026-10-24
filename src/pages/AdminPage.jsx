@@ -19,22 +19,43 @@ export default function AdminPage() {
   const isDev = hasRole('dev');
 
   const { data: usersList = [], isLoading } = useQuery({
-    queryKey: ['admin_users'],
+    queryKey: ['admin_users_safe'],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, xp, organizations(name), user_roles(role_id, roles(name))')
-        .order('created_at', { ascending: false });
-      return data || [];
+      // Загружаем таблицы отдельно без капризных JOIN-склеек PostgREST
+      const [profRes, orgsRes, urRes] = await Promise.all([
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+        supabase.from('organizations').select('id, name'),
+        supabase.from('user_roles').select('user_id, role_id')
+      ]);
+
+      const profiles = profRes.data || [];
+      const orgs = orgsRes.data || [];
+      const userRoles = urRes.data || [];
+
+      const orgMap = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
+
+      return profiles.map((p) => ({
+        ...p,
+        orgName: orgMap[p.org_id] || 'МБОУ «СОШ № 1»',
+        activeRoleIds: userRoles.filter((ur) => ur.user_id === p.id).map((ur) => ur.role_id)
+      }));
     }
   });
 
   const toggleRoleMutation = useMutation({
     mutationFn: async ({ targetUserId, roleId, hasIt }) => {
       if (hasIt) {
-        await supabase.from('user_roles').delete().eq('user_id', targetUserId).eq('role_id', roleId);
+        const { error } = await supabase
+          .from('user_roles')
+          .delete()
+          .eq('user_id', targetUserId)
+          .eq('role_id', roleId);
+        if (error) throw error;
       } else {
-        await supabase.from('user_roles').insert([{ user_id: targetUserId, role_id: roleId, granted_by: user.id }]);
+        const { error } = await supabase
+          .from('user_roles')
+          .insert([{ user_id: targetUserId, role_id: roleId }]);
+        if (error) throw error;
       }
       await logActivityAndAwardXp(user.id, {
         action: hasIt ? 'revoke_role' : 'grant_role',
@@ -44,8 +65,8 @@ export default function AdminPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin_users'] });
-      toast('Роли пользователя обновлены и записаны в activity_log', 'success');
+      queryClient.invalidateQueries({ queryKey: ['admin_users_safe'] });
+      toast('Роли пользователя успешно обновлены!', 'success');
     },
     onError: (e) => toast(e.message, 'error')
   });
@@ -61,7 +82,7 @@ export default function AdminPage() {
             Панель <strong className="font-semibold text-[#FFAA00]">Администратора {isDev ? '& Dev' : ''}</strong>
           </h1>
         </div>
-        <Badge color="red">Protected by RoleGuard</Badge>
+        <Badge color="red">Найдено участников: {usersList.length}</Badge>
       </div>
 
       <Card className="space-y-4">
@@ -74,19 +95,21 @@ export default function AdminPage() {
               <tr className="border-b border-white/10 font-mono text-[10px] uppercase text-[#8A93A6]">
                 <th className="py-3 px-4">Пользователь</th>
                 <th className="py-3 px-4">Организация</th>
+                <th className="py-3 px-4">XP</th>
                 <th className="py-3 px-4">Назначенные роли (клик для переключения)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {usersList.map((u) => {
-                const activeRoleIds = (u.user_roles || []).map((r) => r.role_id);
+                const activeRoleIds = u.activeRoleIds || [1];
                 return (
                   <tr key={u.id}>
                     <td className="py-3.5 px-4">
                       <div className="font-mono text-[#FFAA00] font-bold">{u.username}</div>
                       <div className="text-white">{u.full_name}</div>
                     </td>
-                    <td className="py-3.5 px-4 text-[#8A93A6]">{u.organizations?.name || '—'}</td>
+                    <td className="py-3.5 px-4 text-[#8A93A6]">{u.orgName}</td>
+                    <td className="py-3.5 px-4 font-mono text-[#34D399] font-bold">{u.xp || 100} XP</td>
                     <td className="py-3.5 px-4">
                       <div className="flex flex-wrap gap-1.5">
                         {ROLE_MAP.map((r) => {

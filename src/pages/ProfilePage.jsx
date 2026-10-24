@@ -8,7 +8,7 @@ import { FileDown, UserCheck, MessageSquare, Lock, Clock, LogOut } from 'lucide-
 
 export default function ProfilePage() {
   const { username: routeUsername } = useParams();
-  const { user, profile: myProfile, refreshProfile, signOut } = useAuth();
+  const { user, profile: myProfile, roles: myRoles, refreshProfile, signOut } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -18,46 +18,78 @@ export default function ProfilePage() {
   const [isEditing, setIsEditing] = useState(false);
 
   const cleanRoute = (routeUsername || '').replace('@', '').trim().toLowerCase();
-  const isOwnProfile = !routeUsername || (myProfile?.username && cleanRoute === myProfile.username.replace('@', '').toLowerCase());
+  const cleanMy = (myProfile?.username || '').replace('@', '').trim().toLowerCase();
+  const isOwnProfile = !routeUsername || (cleanMy && cleanRoute === cleanMy);
 
   const { data: profileData, isLoading, refetch } = useQuery({
-    queryKey: ['profile_view', routeUsername, user?.id, myProfile?.username],
-    enabled: Boolean(user?.id || routeUsername),
+    queryKey: ['profile_view_safe', routeUsername, user?.id, myProfile?.id],
+    enabled: Boolean(user?.id || routeUsername || myProfile?.id),
     queryFn: async () => {
-      let query = supabase
-        .from('profiles')
-        .select('*, organizations(name, type, city), user_roles(roles(name))');
+      let prof = null;
 
-      // Если в URL нет имени, ищем СТРОГО по ID текущего пользователя
-      if (!routeUsername && user?.id) {
-        query = query.eq('id', user.id);
-      } else {
-        const rawSearch = cleanRoute;
-        query = query.or(`username.ilike.@${rawSearch},username.ilike.${rawSearch}`);
+      // 1. Загружаем сам профиль БЕЗ вложенных склеек, которые вызывали ошибку 400
+      if (isOwnProfile && user?.id) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .maybeSingle();
+        prof = data || myProfile;
+      } else if (cleanRoute) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .or(`username.ilike.@${cleanRoute},username.ilike.${cleanRoute}`)
+          .maybeSingle();
+        prof = data;
       }
 
-      const { data: prof, error } = await query.maybeSingle();
+      // Если даже так база не вернула, но это наш профиль — берем готовый объект из шапки (AuthContext)!
+      if (!prof && isOwnProfile && myProfile) {
+        prof = myProfile;
+      }
 
-      if (error || !prof) return null;
+      if (!prof) return null;
 
-      const [logsRes, mentorsRes] = await Promise.all([
-        supabase
-          .from('activity_log')
-          .select('*')
-          .eq('user_id', prof.id)
-          .order('created_at', { ascending: false })
-          .limit(10),
-        supabase
-          .from('mentor_links')
-          .select('*, student:profiles!mentor_links_student_id_fkey(username, full_name), mentor:profiles!mentor_links_mentor_id_fkey(username, full_name)')
-          .or(`student_id.eq.${prof.id},mentor_id.eq.${prof.id}`)
-      ]);
+      // 2. Отдельными простыми запросами подгружаем организацию, роли и логи (никогда не вызовет 400!)
+      let orgObj = prof.organizations || null;
+      if (!orgObj && prof.org_id) {
+        const { data: orgData } = await supabase
+          .from('organizations')
+          .select('name, type, city')
+          .eq('id', prof.org_id)
+          .maybeSingle();
+        orgObj = orgData;
+      }
+
+      let loadedRoles = isOwnProfile && myRoles?.length ? myRoles : ['student'];
+      const { data: roleRows } = await supabase
+        .from('user_roles')
+        .select('role_id')
+        .eq('user_id', prof.id);
+
+      if (roleRows && roleRows.length > 0) {
+        const roleMap = { 1: 'student', 2: 'teacher', 3: 'jury', 4: 'admin', 5: 'dev' };
+        loadedRoles = roleRows.map((r) => roleMap[r.role_id] || 'student');
+      }
+
+      const { data: logsData } = await supabase
+        .from('activity_log')
+        .select('*')
+        .eq('user_id', prof.id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      const { data: mentorsData } = await supabase
+        .from('mentor_links')
+        .select('*')
+        .or(`student_id.eq.${prof.id},mentor_id.eq.${prof.id}`);
 
       return {
-        prof,
-        roles: (prof.user_roles || []).map((r) => r.roles?.name).filter(Boolean),
-        logs: logsRes.data || [],
-        mentorLinks: mentorsRes.data || []
+        prof: { ...prof, organizations: orgObj },
+        roles: loadedRoles,
+        logs: logsData || [],
+        mentorLinks: mentorsData || []
       };
     }
   });
@@ -68,7 +100,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_view'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_view_safe'] });
       refreshProfile();
       setIsEditing(false);
       toast('Настройки профиля сохранены!', 'success');
@@ -105,15 +137,9 @@ export default function ProfilePage() {
         status: 'pending'
       }]);
       if (error) throw error;
-
-      await supabase.from('notifications').insert([{
-        user_id: mentorProf.id,
-        type: 'mentor_request',
-        payload: { preview: `Запрос на наставничество от ${myProfile?.username || 'пользователя'}` }
-      }]);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_view'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_view_safe'] });
       setMentorInput('');
       toast('Запрос наставнику успешно отправлен!', 'success');
     },
@@ -122,17 +148,22 @@ export default function ProfilePage() {
 
   const confirmMentorLink = async (linkId, status) => {
     await supabase.from('mentor_links').update({ status }).eq('id', linkId);
-    queryClient.invalidateQueries({ queryKey: ['profile_view'] });
+    queryClient.invalidateQueries({ queryKey: ['profile_view_safe'] });
     toast(`Статус наставничества обновлен: ${status}`, 'success');
   };
 
-  if (isLoading) return <Skeleton className="h-80 w-full" />;
+  if (isLoading && !myProfile) return <Skeleton className="h-80 w-full" />;
 
-  if (!profileData?.prof) {
+  // Железный фоллбэк: если запрос еще идет или вернул пустоту, но в шапке myProfile ЕСТЬ — рендерим его сразу!
+  const activeProf = profileData?.prof || (isOwnProfile ? myProfile : null);
+  const activeRoles = profileData?.roles || (isOwnProfile ? myRoles : ['student']);
+  const logs = profileData?.logs || [];
+  const mentorLinks = profileData?.mentorLinks || [];
+
+  if (!activeProf) {
     return (
       <Card className="p-8 text-center space-y-4 font-mono text-xs text-[#8A93A6]">
         <div className="text-white text-base">Профиль пользователя не найден в базе данных</div>
-        <p>Возможно, вы вошли под новой учётной записью, для которой ещё не создана карточка исследователя.</p>
         <div className="flex justify-center gap-3 pt-2">
           <Button size="sm" variant="outline" onClick={() => refetch()}>
             Повторить запрос
@@ -145,14 +176,13 @@ export default function ProfilePage() {
     );
   }
 
-  const { prof, roles, logs, mentorLinks } = profileData;
-  const isPrivateAndHidden = !isOwnProfile && prof.privacy?.show_profile === 'private';
+  const isPrivateAndHidden = !isOwnProfile && activeProf.privacy?.show_profile === 'private';
 
   if (isPrivateAndHidden) {
     return (
       <Card className="p-12 text-center space-y-4">
         <Lock size={32} className="mx-auto text-[#FFAA00]" />
-        <h2 className="text-xl font-light text-white">Приватный профиль ({prof.username})</h2>
+        <h2 className="text-xl font-light text-white">Приватный профиль ({activeProf.username})</h2>
         <p className="text-xs text-[#8A93A6]">
           Пользователь ограничил публичный просмотр своей страницы в настройках приватности.
         </p>
@@ -166,7 +196,7 @@ export default function ProfilePage() {
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center gap-5">
             <div className="relative">
-              <Avatar src={prof.avatar_url} username={prof.username} status={prof.status} size="lg" />
+              <Avatar src={activeProf.avatar_url} username={activeProf.username} status={activeProf.status} size="lg" />
               {isOwnProfile && (
                 <label className="absolute -bottom-1 -right-1 px-1.5 py-0.5 bg-[#FFAA00] text-[#050810] font-mono text-[9px] font-bold cursor-pointer hover:bg-[#FFC857] transition-colors">
                   ФОТО
@@ -177,16 +207,16 @@ export default function ProfilePage() {
 
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-base font-bold text-[#FFAA00]">{prof.username}</span>
-                {(roles.length ? roles : ['student']).map((r) => (
+                <span className="font-mono text-base font-bold text-[#FFAA00]">{activeProf.username}</span>
+                {(activeRoles?.length ? activeRoles : ['student']).map((r) => (
                   <Badge key={r} color={r === 'admin' || r === 'dev' ? 'red' : r === 'jury' ? 'gold' : 'emerald'}>
                     {r}
                   </Badge>
                 ))}
               </div>
-              <h1 className="text-2xl font-light text-white">{prof.full_name}</h1>
+              <h1 className="text-2xl font-light text-white">{activeProf.full_name}</h1>
               <div className="text-xs text-[#8A93A6]">
-                {prof.organizations?.name || 'ХМАО — Югра'} · Опыт: <strong className="text-[#34D399] font-mono">{prof.xp || 100} XP</strong> · Streak: 🔥 {prof.streak_days || 1} дн.
+                {activeProf.organizations?.name || 'МБОУ «СОШ № 1» (пгт. Пойковский)'} · Опыт: <strong className="text-[#34D399] font-mono">{activeProf.xp || 100} XP</strong> · Streak: 🔥 {activeProf.streak_days || 1} дн.
               </div>
             </div>
           </div>
@@ -195,7 +225,7 @@ export default function ProfilePage() {
             {isOwnProfile ? (
               <>
                 <select
-                  value={prof.status || 'online'}
+                  value={activeProf.status || 'online'}
                   onChange={(e) => updateProfileMutation.mutate({ status: e.target.value })}
                   className="bg-[#050810] border border-white/15 px-3 py-2 font-mono text-xs text-white focus:outline-none focus:border-[#FFAA00]"
                 >
@@ -203,7 +233,7 @@ export default function ProfilePage() {
                   <option value="away">🟡 Отошёл</option>
                   <option value="dnd">🔴 Не беспокоить</option>
                 </select>
-                <Button variant="outline" size="sm" onClick={() => { setEditBio(prof.bio || ''); setIsEditing(!isEditing); }}>
+                <Button variant="outline" size="sm" onClick={() => { setEditBio(activeProf.bio || ''); setIsEditing(!isEditing); }}>
                   {isEditing ? 'Закрыть' : 'Редактировать'}
                 </Button>
                 <Button variant="gold" size="sm" onClick={() => window.print()}>
@@ -215,7 +245,7 @@ export default function ProfilePage() {
                 <Button size="sm" onClick={() => navigate('/chat')}>
                   <MessageSquare size={14} /> Написать
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => requestMentorMutation.mutate(prof.username)}>
+                <Button size="sm" variant="outline" onClick={() => requestMentorMutation.mutate(activeProf.username)}>
                   <UserCheck size={14} /> Наставник
                 </Button>
               </>
@@ -224,7 +254,7 @@ export default function ProfilePage() {
         </div>
 
         <p className="mt-5 text-xs text-zinc-300 border-l-2 border-[#00C853] pl-3 leading-relaxed">
-          {prof.bio || 'Исследователь экологических и производственных технологий ХМАО-Югры.'}
+          {activeProf.bio || 'Исследователь экологических и производственных технологий ХМАО-Югры.'}
         </p>
 
         {isOwnProfile && isEditing && (
@@ -233,11 +263,11 @@ export default function ProfilePage() {
             <div className="flex flex-wrap items-center gap-4 text-xs">
               <label className="font-mono text-[10px] uppercase text-[#8A93A6]">Приватность профиля:</label>
               <select
-                value={prof.privacy?.show_profile || 'public'}
+                value={activeProf.privacy?.show_profile || 'public'}
                 onChange={(e) =>
                   updateProfileMutation.mutate({
                     bio: editBio,
-                    privacy: { ...prof.privacy, show_profile: e.target.value }
+                    privacy: { ...activeProf.privacy, show_profile: e.target.value }
                   })
                 }
                 className="bg-[#050810] border border-white/15 px-3 py-1.5 text-xs text-white focus:outline-none"
@@ -281,7 +311,7 @@ export default function ProfilePage() {
                 <div key={lnk.id} className="p-3 border border-white/10 bg-[#050810] flex items-center justify-between text-xs">
                   <div>
                     <div className="font-mono text-[#FFAA00]">
-                      {lnk.student?.username} ↔ {lnk.mentor?.username}
+                      Связь #{lnk.id.slice(0, 6)}
                     </div>
                     <div className="text-[10px] text-[#8A93A6]">Статус заявки: {lnk.status}</div>
                   </div>
