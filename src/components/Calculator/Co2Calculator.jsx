@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -10,7 +10,7 @@ import {
   Tooltip,
   CartesianGrid
 } from 'recharts';
-import { api } from '../../lib/supabaseClient';
+import { supabase, logActivityAndAwardXp } from '../../lib/supabaseClient';
 
 const FIELD_PRESETS = [
   { name: 'Мамонтовский куст (Стандарт)', prod: 14000, apg: 95.5, eq: 'modern', res: 15 },
@@ -24,8 +24,38 @@ export default function Co2Calculator({ user, onSaved }) {
   const [apgRate, setApgRate] = useState(95.5);
   const [equipment, setEquipment] = useState('modern');
   const [resShare, setResShare] = useState(15);
-  const [history, setHistory] = useState(() => api.getCo2History());
+  const [history, setHistory] = useState([]);
   const [savedBanner, setSavedBanner] = useState(false);
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadHistory = async () => {
+    try {
+      const { data } = await supabase
+        .from('co2_calculations')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(3);
+      if (data && data.length) {
+        setHistory(data);
+      } else {
+        setHistory([
+          {
+            id: 'init-1',
+            field_name: 'Мамонтовский куст (Стандарт)',
+            oil_production_tons: 14000,
+            apg_utilization_rate: 96.5,
+            calculated_emissions_tons: 1940,
+            saved_emissions_tons: 1620
+          }
+        ]);
+      }
+    } catch {
+      // fallback
+    }
+  };
 
   const applyPreset = (p) => {
     setFieldName(p.name);
@@ -66,33 +96,49 @@ export default function Co2Calculator({ user, onSaved }) {
 
     const recs = [];
     if (apgRate < 95) {
-      recs.push('КРИТИЧНО: Утилизация ПНГ ниже норматива 95% РФ. Подключите модульную ГПУ или компрессорную станцию обратной закачки.');
+      recs.push('КРИТИЧНО: Утилизация ПНГ ниже норматива 95% РФ. Подключите компрессорную станцию или ГПУ.');
     } else {
       recs.push('Норматив ПНГ (≥95%) выполнен. Рекомендуется внедрение микротурбин для когенерации тепла.');
     }
     if (resShare < 20) {
-      recs.push('Увеличьте долю солнечных бифациальных панелей на кустовой автоматике до 20–25% для снижения Scope 2.');
+      recs.push('Увеличьте долю солнечных панелей на кустовой автоматике до 20–25% для снижения Scope 2.');
     }
 
     return { totalOptimized, totalBaseline, savedTons, moneySavedRub, structureData, trajectoryData, recs };
   }, [production, apgRate, equipment, resShare]);
 
   const handleSave = async () => {
-    const updatedList = await api.saveCo2Calculation({
-      user_id: user?.id || 'eco-usr-1',
-      field_name: fieldName,
-      oil_production_tons: production,
-      apg_utilization_rate: apgRate,
-      equipment_type: equipment,
-      res_share: resShare,
-      calculated_emissions_tons: calc.totalOptimized,
-      saved_emissions_tons: calc.savedTons,
-      financial_effect_rub: calc.moneySavedRub
-    });
-    setHistory(updatedList);
-    setSavedBanner(true);
-    setTimeout(() => setSavedBanner(false), 3000);
-    if (onSaved) onSaved();
+    try {
+      const payload = {
+        user_id: user?.id,
+        field_name: fieldName,
+        oil_production_tons: production,
+        apg_utilization_rate: apgRate,
+        equipment_type: equipment,
+        res_share: resShare,
+        calculated_emissions_tons: calc.totalOptimized,
+        saved_emissions_tons: calc.savedTons,
+        financial_effect_rub: calc.moneySavedRub
+      };
+
+      await supabase.from('co2_calculations').insert([payload]);
+
+      if (user?.id) {
+        await logActivityAndAwardXp(user.id, {
+          action: 'co2_calculation',
+          entity: 'calculator',
+          xpDelta: 50,
+          newBadge: 'Аудитор CO₂'
+        });
+      }
+
+      setHistory((prev) => [payload, ...prev.slice(0, 2)]);
+      setSavedBanner(true);
+      setTimeout(() => setSavedBanner(false), 3000);
+      if (onSaved) onSaved();
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
@@ -123,11 +169,10 @@ export default function Co2Calculator({ user, onSaved }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 arch-grid">
-        {/* Левая колонка */}
         <div className="lg:col-span-5 arch-card p-7 space-y-6 min-w-0">
           <div>
             <label className="block font-mono text-[10px] uppercase tracking-widest text-[#8A93A6] mb-2">
-              Объект расчёта (привязка к {user?.username || '@pestrikov_kv'})
+              Объект расчёта ({user?.username || '@researcher'})
             </label>
             <input
               type="text"
@@ -221,12 +266,11 @@ export default function Co2Calculator({ user, onSaved }) {
 
           {savedBanner && (
             <div className="p-3 border border-[#00C853]/50 bg-[#00C853]/10 font-mono text-[11px] text-[#34D399] text-center">
-              ✓ Записано в таблицу public.eco_co2_calculations ({user?.username})
+              ✓ Записано в базу данных Supabase
             </div>
           )}
         </div>
 
-        {/* Правая колонка с жёстко зафиксированными по высоте графиками */}
         <div className="lg:col-span-7 arch-card p-7 flex flex-col justify-between space-y-6 min-w-0">
           <div className="grid grid-cols-1 sm:grid-cols-3 arch-grid">
             <div className="arch-card p-4">
@@ -250,7 +294,6 @@ export default function Co2Calculator({ user, onSaved }) {
             </div>
           </div>
 
-          {/* ИСПРАВЛЕННЫЕ ГРАФИКИ: фиксированный height={210} в изолированном контейнере */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-w-0">
             <div className="p-4 border border-white/[0.05] bg-[#08090f] min-w-0 overflow-hidden">
               <div className="font-mono text-[10px] uppercase tracking-wider text-[#8A93A6] mb-3">
@@ -262,9 +305,7 @@ export default function Co2Calculator({ user, onSaved }) {
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                     <XAxis dataKey="name" stroke="#8A93A6" tick={{ fontSize: 10 }} />
                     <YAxis stroke="#8A93A6" tick={{ fontSize: 10 }} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#050810', borderColor: 'rgba(255,170,0,0.3)', fontSize: '11px' }}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#050810', borderColor: 'rgba(255,170,0,0.3)', fontSize: '11px' }} />
                     <Bar dataKey="базовый" fill="#4A5464" radius={[2, 2, 0, 0]} />
                     <Bar dataKey="текущий" fill="#00C853" radius={[2, 2, 0, 0]} />
                   </BarChart>
@@ -288,9 +329,7 @@ export default function Co2Calculator({ user, onSaved }) {
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                     <XAxis dataKey="year" stroke="#8A93A6" tick={{ fontSize: 10 }} />
                     <YAxis stroke="#8A93A6" tick={{ fontSize: 10 }} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#050810', borderColor: 'rgba(255,170,0,0.3)', fontSize: '11px' }}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#050810', borderColor: 'rgba(255,170,0,0.3)', fontSize: '11px' }} />
                     <Area type="monotone" dataKey="выбросы" stroke="#FFAA00" strokeWidth={2} fill="url(#co2GradFixed)" />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -312,17 +351,15 @@ export default function Co2Calculator({ user, onSaved }) {
         </div>
       </div>
 
-      {/* Журнал расчётов из БД */}
       <div className="border border-white/[0.06] bg-[#050810] p-6">
         <div className="font-mono text-[10px] uppercase tracking-widest text-[#8A93A6] mb-4">
-          Последние записи в таблице public.eco_co2_calculations ({history.length})
+          Журнал расчётов (Supabase)
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {history.slice(0, 3).map((item) => (
-            <div key={item.id} className="p-4 border border-white/[0.06] bg-[#08090f] flex justify-between items-center">
+          {history.slice(0, 3).map((item, idx) => (
+            <div key={item.id || idx} className="p-4 border border-white/[0.06] bg-[#08090f] flex justify-between items-center">
               <div>
-                <div className="font-mono text-[10px] text-[#FFAA00]">{item.username || '@pestrikov_kv'}</div>
-                <div className="text-xs font-medium text-white mt-0.5">{item.field_name}</div>
+                <div className="text-xs font-medium text-white">{item.field_name}</div>
                 <div className="font-mono text-[10px] text-[#8A93A6] mt-0.5">
                   Добыча: {Number(item.oil_production_tons).toLocaleString()} т · ПНГ: {item.apg_utilization_rate}%
                 </div>
