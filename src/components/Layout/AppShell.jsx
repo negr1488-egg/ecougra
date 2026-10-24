@@ -18,12 +18,14 @@ import {
   Trash2,
   Cookie,
   Radio,
-  Cpu
+  Cpu,
+  Menu
 } from 'lucide-react';
 
 export default function AppShell() {
   const { profile, notifications = [], unreadChatCount, markNotificationsRead, hasRole, signOut } = useAuth();
   const [notifOpen, setNotifOpen] = useState(false);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [notifFilter, setNotifFilter] = useState('all');
   const [deletedNotifIds, setDeletedNotifIds] = useState([]);
   const [cookieAccepted, setCookieAccepted] = useState(() => localStorage.getItem('ugra_cookie_ok') === '1');
@@ -65,18 +67,14 @@ export default function AppShell() {
   }
 
   return (
-    <div className="min-h-screen bg-[#030509] text-zinc-100 flex flex-col justify-between relative overflow-x-hidden selection:bg-[#00C853]/30 selection:text-white">
-      {/* МНОГОСЛОЙНЫЙ ГЛУБОКИЙ КИБЕР-ЭКОЛОГИЧЕСКИЙ ФОН */}
+    <div className="min-h-screen bg-[#030509] text-zinc-100 flex flex-col justify-between relative overflow-x-hidden selection:bg-[#00C853]/30 selection:text-white pb-16 lg:pb-0">
+      {/* ДЕКОРАТИВНЫЙ ФОН ГЛУБИНЫ */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        {/* Градиентные туманности */}
-        <div className="absolute -top-32 -left-32 w-[650px] h-[650px] bg-gradient-to-br from-[#00C853]/15 to-transparent rounded-full blur-[140px] animate-pulse" style={{ animationDuration: '8s' }} />
+        <div className="absolute -top-32 -left-32 w-[650px] h-[650px] bg-gradient-to-br from-[#00C853]/15 to-transparent rounded-full blur-[140px]" />
         <div className="absolute top-1/4 -right-40 w-[600px] h-[600px] bg-gradient-to-bl from-[#FFAA00]/10 to-transparent rounded-full blur-[160px]" />
         <div className="absolute -bottom-32 left-1/4 w-[700px] h-[700px] bg-gradient-to-tr from-[#0077b6]/12 to-transparent rounded-full blur-[170px]" />
-
-        {/* Геометрическая сетка и телеметрические метки Югры */}
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff05_1px,transparent_1px),linear-gradient(to_bottom,#ffffff05_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)]" />
 
-        {/* Угловые HUD-маркеры промысловой телеметрии */}
         <div className="hidden xl:block absolute top-24 left-8 font-mono text-[9px] text-white/20 uppercase tracking-widest space-y-1">
           <div>LOC // 61.2333° N, 71.9333° E</div>
           <div className="flex items-center gap-1.5 text-[#34D399]/40">
@@ -95,16 +93,28 @@ export default function AppShell() {
       {/* ШАПКА */}
       <header className="sticky top-0 z-40 border-b border-white/10 bg-[#04060c]/85 backdrop-blur-2xl">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
-          <div onClick={() => navigate('/')} className="flex items-center gap-3 cursor-pointer">
-            <span className="font-mono text-sm font-bold text-[#FFAA00]">(💧)</span>
-            <div>
-              <div className="text-xs font-bold tracking-widest uppercase text-white">
-                ЮГРА.<span className="text-[#FFAA00]">НЕФТЬ</span>
+          <div className="flex items-center gap-3">
+            {/* Кнопка-гамбургер для мобильных */}
+            <button
+              onClick={() => setMobileDrawerOpen(true)}
+              className="lg:hidden p-2 border border-white/10 bg-white/[0.02] text-[#8A93A6] hover:text-white"
+              title="Открыть меню"
+            >
+              <Menu size={18} />
+            </button>
+
+            <div onClick={() => navigate('/')} className="flex items-center gap-2.5 cursor-pointer">
+              <span className="font-mono text-sm font-bold text-[#FFAA00]">(💧)</span>
+              <div>
+                <div className="text-xs font-bold tracking-widest uppercase text-white">
+                  ЮГРА.<span className="text-[#FFAA00]">НЕФТЬ</span>
+                </div>
+                <div className="font-mono text-[9px] text-[#34D399] uppercase tracking-widest">Зелёная Югра</div>
               </div>
-              <div className="font-mono text-[9px] text-[#34D399] uppercase tracking-widest">Зелёная Югра</div>
             </div>
           </div>
 
+          {/* НАВИГАЦИЯ ДЛЯ КОМПЬЮТЕРОВ (БЕЗ ИЗМЕНЕНИЙ) */}
           <nav className="hidden lg:flex items-center gap-1">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -131,8 +141,9 @@ export default function AppShell() {
             })}
           </nav>
 
-          <div className="flex items-center gap-3 relative">
-            <Badge color="gold">
+          {/* ПРАВАЯ ЧАСТЬ ШАПКИ */}
+          <div className="flex items-center gap-2 sm:gap-3 relative">
+            <Badge color="gold" className="hidden sm:inline-flex">
               <Flame size={12} /> {profile?.streak_days || 1} дн.
             </Badge>
 
@@ -216,7 +227,7 @@ export default function AppShell() {
               </div>
             )}
 
-            <div onClick={() => navigate('/profile')} className="flex items-center gap-2.5 cursor-pointer pl-2 border-l border-white/10">
+            <div onClick={() => navigate('/profile')} className="flex items-center gap-2 cursor-pointer pl-1 sm:pl-2 border-l border-white/10">
               <Avatar src={profile?.avatar_url} username={profile?.username} status={profile?.status} size="sm" />
               <div className="hidden sm:block text-left">
                 <div className="font-mono text-xs text-[#FFAA00] font-medium">{profile?.username || '@user'}</div>
@@ -231,13 +242,114 @@ export default function AppShell() {
         </div>
       </header>
 
+      {/* МОБИЛЬНАЯ ВЫЕЗДНАЯ ШТОРКА (БОКОВОЕ МЕНЮ) */}
+      {mobileDrawerOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity"
+            onClick={() => setMobileDrawerOpen(false)}
+          />
+          <div className="fixed inset-y-0 left-0 w-72 bg-[#060a14] border-r border-white/15 p-6 shadow-2xl flex flex-col justify-between z-10 animate-slideRight">
+            <div className="space-y-6">
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-2 font-mono text-xs text-white">
+                  <span className="text-[#FFAA00] font-bold">(💧)</span> МЕНЮ НАВИГАЦИИ
+                </div>
+                <button onClick={() => setMobileDrawerOpen(false)} className="text-[#8A93A6] hover:text-white p-1">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      end={item.to === '/'}
+                      onClick={() => setMobileDrawerOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center justify-between p-3 border font-mono text-xs uppercase tracking-wider transition-all ${
+                          isActive
+                            ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399] font-bold'
+                            : 'border-white/5 bg-[#050810] text-[#8A93A6] hover:text-white hover:border-white/20'
+                        }`
+                      }
+                    >
+                      <div className="flex items-center gap-3">
+                        <Icon size={16} />
+                        <span>{item.label}</span>
+                      </div>
+                      {item.badge > 0 && (
+                        <span className="px-2 py-0.5 bg-[#FFAA00] text-[#050810] font-bold text-[10px] rounded-full">
+                          {item.badge}
+                        </span>
+                      )}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-white/10 space-y-3 font-mono text-xs">
+              <div className="flex items-center justify-between text-[#8A93A6]">
+                <span>Серия активности:</span>
+                <span className="text-[#FFAA00]">🔥 {profile?.streak_days || 1} дн.</span>
+              </div>
+              <div className="flex items-center justify-between text-[#8A93A6]">
+                <span>Баланс:</span>
+                <span className="text-[#34D399] font-bold">{profile?.xp || 100} XP</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ОСНОВНОЙ КОНТЕНТ */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-8 relative z-10">
+      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 relative z-10">
         <Outlet />
       </main>
 
+      {/* НИЖНИЙ ПЛАВАЮЩИЙ НАВБАР ДЛЯ ТЕЛЕФОНОВ (BOTTOM NAVIGATION) */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#060a14]/95 backdrop-blur-2xl border-t border-white/15 px-2 py-1.5 flex items-center justify-around shadow-[0_-10px_25px_rgba(0,0,0,0.7)]">
+        {navItems.slice(0, 5).map((item) => {
+          const Icon = item.icon;
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) =>
+                `flex flex-col items-center justify-center py-1 px-2.5 rounded relative transition-colors ${
+                  isActive ? 'text-[#34D399]' : 'text-[#8A93A6] hover:text-white'
+                }`
+              }
+            >
+              <Icon size={18} />
+              <span className="font-mono text-[9px] uppercase tracking-wider mt-0.5">{item.label}</span>
+              {item.badge > 0 && (
+                <span className="absolute top-0 right-1 w-2.5 h-2.5 bg-[#FFAA00] rounded-full" />
+              )}
+            </NavLink>
+          );
+        })}
+        {/* Кнопка Профиль в нижнем баре */}
+        <NavLink
+          to="/profile"
+          className={({ isActive }) =>
+            `flex flex-col items-center justify-center py-1 px-2.5 rounded transition-colors ${
+              isActive ? 'text-[#34D399]' : 'text-[#8A93A6] hover:text-white'
+            }`
+          }
+        >
+          <User size={18} />
+          <span className="font-mono text-[9px] uppercase tracking-wider mt-0.5">Профиль</span>
+        </NavLink>
+      </nav>
+
       {/* FOOTER */}
-      <footer className="border-t border-white/10 bg-[#020307]/90 backdrop-blur-md py-8 px-4 sm:px-8 mt-12 relative z-10 print:hidden">
+      <footer className="border-t border-white/10 bg-[#020307]/90 backdrop-blur-md py-8 px-4 sm:px-8 mt-12 relative z-10 print:hidden hidden lg:block">
         <div className="max-w-[1440px] mx-auto grid grid-cols-1 md:grid-cols-4 gap-6 text-xs text-[#8A93A6]">
           <div className="space-y-2">
             <div className="font-mono text-sm font-bold text-white">
@@ -272,7 +384,7 @@ export default function AppShell() {
       </footer>
 
       {!cookieAccepted && (
-        <div className="fixed bottom-4 right-4 left-4 sm:left-auto sm:max-w-md bg-[#0a0f1c]/95 border border-[#00C853]/50 p-4 shadow-2xl z-50 flex items-center justify-between gap-4 backdrop-blur-lg">
+        <div className="fixed bottom-16 lg:bottom-4 right-4 left-4 sm:left-auto sm:max-w-md bg-[#0a0f1c]/95 border border-[#00C853]/50 p-4 shadow-2xl z-50 flex items-center justify-between gap-4 backdrop-blur-lg">
           <div className="flex items-center gap-3 text-xs text-zinc-200">
             <Cookie size={22} className="text-[#FFAA00] shrink-0" />
             <span>Мы используем файлы Cookie для сохранения сессии платформы.</span>
