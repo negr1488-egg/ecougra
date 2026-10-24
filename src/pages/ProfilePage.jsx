@@ -17,23 +17,34 @@ export default function ProfilePage() {
   const [editBio, setEditBio] = useState('');
   const [isEditing, setIsEditing] = useState(false);
 
-  const targetUname = routeUsername ? (routeUsername.startsWith('@') ? routeUsername : `@${routeUsername}`) : myProfile?.username;
-  const isOwnProfile = !routeUsername || targetUname === myProfile?.username;
+  // Определение целевого пользователя (поиск без учета @ и регистра)
+  const cleanRoute = (routeUsername || '').replace('@', '').trim().toLowerCase();
+  const cleanMy = (myProfile?.username || '').replace('@', '').trim().toLowerCase();
+  const isOwnProfile = !routeUsername || cleanRoute === cleanMy;
 
   const { data: profileData, isLoading } = useQuery({
-    queryKey: ['profile_view', targetUname],
-    enabled: Boolean(targetUname),
+    queryKey: ['profile_view', routeUsername, myProfile?.username],
+    enabled: Boolean(routeUsername || myProfile?.username),
     queryFn: async () => {
-      const { data: prof } = await supabase
+      const rawSearch = (routeUsername || myProfile?.username || '').replace('@', '').trim().toLowerCase();
+
+      // Запрос профиля: ищет совпадение как с префиксом @, так и без него
+      const { data: prof, error } = await supabase
         .from('profiles')
         .select('*, organizations(name, type, city), user_roles(roles(name))')
-        .eq('username', targetUname)
+        .or(`username.ilike.@${rawSearch},username.ilike.${rawSearch}`)
         .maybeSingle();
 
-      if (!prof) return null;
+      if (error || !prof) return null;
 
+      // Параллельная загрузка логов активности и связей наставничества
       const [logsRes, mentorsRes] = await Promise.all([
-        supabase.from('activity_log').select('*').eq('user_id', prof.id).order('created_at', { ascending: false }).limit(10),
+        supabase
+          .from('activity_log')
+          .select('*')
+          .eq('user_id', prof.id)
+          .order('created_at', { ascending: false })
+          .limit(10),
         supabase
           .from('mentor_links')
           .select('*, student:profiles!mentor_links_student_id_fkey(username, full_name), mentor:profiles!mentor_links_mentor_id_fkey(username, full_name)')
@@ -67,7 +78,7 @@ export default function ProfilePage() {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      toast('Загрузка аватара...', 'info');
+      toast('Загрузка аватара в хранилище...', 'info');
       const url = await uploadFileToStorage('avatars', user.id, file);
       updateProfileMutation.mutate({ avatar_url: url });
     } catch (err) {
@@ -77,12 +88,13 @@ export default function ProfilePage() {
 
   const requestMentorMutation = useMutation({
     mutationFn: async (identifier) => {
-      const clean = identifier.trim();
+      const clean = identifier.replace('@', '').trim().toLowerCase();
       const { data: mentorProf } = await supabase
         .from('profiles')
         .select('id, username')
-        .eq('username', clean.startsWith('@') ? clean : `@${clean}`)
+        .or(`username.ilike.@${clean},username.ilike.${clean}`)
         .maybeSingle();
+
       if (!mentorProf) throw new Error('Наставник с таким @username не найден');
 
       const { error } = await supabase.from('mentor_links').insert([{
@@ -101,7 +113,7 @@ export default function ProfilePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['profile_view'] });
       setMentorInput('');
-      toast('Запрос наставнику отправлен!', 'success');
+      toast('Запрос наставнику успешно отправлен!', 'success');
     },
     onError: (e) => toast(e.message, 'error')
   });
@@ -109,12 +121,20 @@ export default function ProfilePage() {
   const confirmMentorLink = async (linkId, status) => {
     await supabase.from('mentor_links').update({ status }).eq('id', linkId);
     queryClient.invalidateQueries({ queryKey: ['profile_view'] });
-    toast(`Статус наставничества: ${status}`, 'success');
+    toast(`Статус наставничества обновлен: ${status}`, 'success');
   };
 
   if (isLoading) return <Skeleton className="h-80 w-full" />;
+
   if (!profileData?.prof) {
-    return <Card className="p-8 text-center font-mono text-sm text-[#8A93A6]">Профиль {targetUname} не найден.</Card>;
+    return (
+      <Card className="p-8 text-center space-y-3 font-mono text-xs text-[#8A93A6]">
+        <div>Профиль пользователя не найден в базе данных.</div>
+        <Button size="sm" variant="outline" onClick={() => navigate('/profile')}>
+          Перейти в свой профиль
+        </Button>
+      </Card>
+    );
   }
 
   const { prof, roles, logs, mentorLinks } = profileData;
@@ -124,8 +144,10 @@ export default function ProfilePage() {
     return (
       <Card className="p-12 text-center space-y-4">
         <Lock size={32} className="mx-auto text-[#FFAA00]" />
-        <h2 className="text-xl font-light text-white">Это приватный профиль ({prof.username})</h2>
-        <p className="text-xs text-[#8A93A6]">Пользователь ограничил публичный просмотр своей страницы в настройках приватности.</p>
+        <h2 className="text-xl font-light text-white">Приватный профиль ({prof.username})</h2>
+        <p className="text-xs text-[#8A93A6]">
+          Пользователь ограничил публичный просмотр своей страницы в настройках приватности.
+        </p>
       </Card>
     );
   }
@@ -139,7 +161,7 @@ export default function ProfilePage() {
             <div className="relative">
               <Avatar src={prof.avatar_url} username={prof.username} status={prof.status} size="lg" />
               {isOwnProfile && (
-                <label className="absolute -bottom-1 -right-1 px-1.5 py-0.5 bg-[#FFAA00] text-[#050810] font-mono text-[9px] font-bold cursor-pointer">
+                <label className="absolute -bottom-1 -right-1 px-1.5 py-0.5 bg-[#FFAA00] text-[#050810] font-mono text-[9px] font-bold cursor-pointer hover:bg-[#FFC857] transition-colors">
                   ФОТО
                   <input type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
                 </label>
@@ -157,7 +179,7 @@ export default function ProfilePage() {
               </div>
               <h1 className="text-2xl font-light text-white">{prof.full_name}</h1>
               <div className="text-xs text-[#8A93A6]">
-                {prof.organizations?.name || 'ХМАО — Югра'} · Опыт: <strong className="text-[#34D399]">{prof.xp} XP</strong> · Streak: 🔥 {prof.streak_days} дн.
+                {prof.organizations?.name || 'ХМАО — Югра'} · Опыт: <strong className="text-[#34D399] font-mono">{prof.xp || 100} XP</strong> · Streak: 🔥 {prof.streak_days || 1} дн.
               </div>
             </div>
           </div>
@@ -169,17 +191,17 @@ export default function ProfilePage() {
                 <select
                   value={prof.status || 'online'}
                   onChange={(e) => updateProfileMutation.mutate({ status: e.target.value })}
-                  className="bg-[#050810] border border-white/15 px-3 py-2 font-mono text-xs text-white"
+                  className="bg-[#050810] border border-white/15 px-3 py-2 font-mono text-xs text-white focus:outline-none focus:border-[#FFAA00]"
                 >
-                  <option value="online">🟢 Онлайн</option>
+                  <option value="online">🟢 В сети</option>
                   <option value="away">🟡 Отошёл</option>
                   <option value="dnd">🔴 Не беспокоить</option>
                 </select>
                 <Button variant="outline" size="sm" onClick={() => { setEditBio(prof.bio || ''); setIsEditing(!isEditing); }}>
-                  Настройки
+                  {isEditing ? 'Закрыть' : 'Редактировать'}
                 </Button>
                 <Button variant="gold" size="sm" onClick={() => window.print()}>
-                  <FileDown size={14} /> Экспорт в PDF
+                  <FileDown size={14} /> В PDF
                 </Button>
               </>
             ) : (
@@ -188,23 +210,23 @@ export default function ProfilePage() {
                   <MessageSquare size={14} /> Написать
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => requestMentorMutation.mutate(prof.username)}>
-                  <UserCheck size={14} /> Сделать наставником
+                  <UserCheck size={14} /> Наставник
                 </Button>
               </>
             )}
           </div>
         </div>
 
-        <p className="mt-5 text-xs text-zinc-300 border-l-2 border-[#00C853] pl-3">
-          {prof.bio || 'Исследователь экологических технологий нефтедобычи ХМАО-Югры.'}
+        <p className="mt-5 text-xs text-zinc-300 border-l-2 border-[#00C853] pl-3 leading-relaxed">
+          {prof.bio || 'Исследователь экологических и производственных технологий ХМАО-Югры.'}
         </p>
 
-        {/* Редактирование Bio и Приватности */}
+        {/* Форма редактирования информации и приватности */}
         {isOwnProfile && isEditing && (
           <div className="mt-6 pt-6 border-t border-white/10 space-y-4 print:hidden">
             <Input label="О себе (Bio)" value={editBio} onChange={(e) => setEditBio(e.target.value)} />
             <div className="flex flex-wrap items-center gap-4 text-xs">
-              <label className="font-mono text-[10px] uppercase text-[#8A93A6]">Видимость профиля:</label>
+              <label className="font-mono text-[10px] uppercase text-[#8A93A6]">Приватность профиля:</label>
               <select
                 value={prof.privacy?.show_profile || 'public'}
                 onChange={(e) =>
@@ -213,13 +235,13 @@ export default function ProfilePage() {
                     privacy: { ...prof.privacy, show_profile: e.target.value }
                   })
                 }
-                className="bg-[#050810] border border-white/15 px-3 py-1.5 text-xs text-white"
+                className="bg-[#050810] border border-white/15 px-3 py-1.5 text-xs text-white focus:outline-none"
               >
-                <option value="public">Публичный (виден всем)</option>
-                <option value="private">Приватный (только по запросу)</option>
+                <option value="public">Публичный (виден всем участникам)</option>
+                <option value="private">Приватный (скрыт от общего доступа)</option>
               </select>
               <Button size="sm" onClick={() => updateProfileMutation.mutate({ bio: editBio })}>
-                Сохранить
+                Сохранить изменения
               </Button>
             </div>
           </div>
@@ -227,10 +249,10 @@ export default function ProfilePage() {
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* ПРИВЯЗКА УЧЕНИК <-> УЧИТЕЛЬ (mentor_links) */}
+        {/* СВЯЗИ НАСТАВНИЧЕСТВА (mentor_links) */}
         <Card className="lg:col-span-5 space-y-4">
           <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00]">
-            Система наставничества (Ученик ↔ Учитель)
+            Система наставничества
           </div>
           {isOwnProfile && (
             <div className="flex gap-2">
@@ -238,8 +260,8 @@ export default function ProfilePage() {
                 type="text"
                 value={mentorInput}
                 onChange={(e) => setMentorInput(e.target.value)}
-                placeholder="Введите @username наставника..."
-                className="flex-1 bg-[#050810] border border-white/10 px-3 py-2 text-xs font-mono text-white"
+                placeholder="Никнейм наставника (@username)..."
+                className="flex-1 bg-[#050810] border border-white/10 px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-[#FFAA00]"
               />
               <Button size="sm" onClick={() => requestMentorMutation.mutate(mentorInput)}>
                 Привязать
@@ -249,7 +271,7 @@ export default function ProfilePage() {
 
           <div className="space-y-2">
             {mentorLinks.length === 0 ? (
-              <div className="text-xs text-[#8A93A6] font-mono py-4">Активных связей с наставниками пока нет.</div>
+              <div className="text-xs text-[#8A93A6] font-mono py-4">Активных связей наставничества нет.</div>
             ) : (
               mentorLinks.map((lnk) => (
                 <div key={lnk.id} className="p-3 border border-white/10 bg-[#050810] flex items-center justify-between text-xs">
@@ -257,7 +279,7 @@ export default function ProfilePage() {
                     <div className="font-mono text-[#FFAA00]">
                       {lnk.student?.username} ↔ {lnk.mentor?.username}
                     </div>
-                    <div className="text-[10px] text-[#8A93A6]">Статус: {lnk.status}</div>
+                    <div className="text-[10px] text-[#8A93A6]">Статус заявки: {lnk.status}</div>
                   </div>
                   {isOwnProfile && lnk.mentor_id === user?.id && lnk.status === 'pending' && (
                     <Button size="sm" onClick={() => confirmMentorLink(lnk.id, 'active')}>
@@ -270,23 +292,27 @@ export default function ProfilePage() {
           </div>
         </Card>
 
-        {/* ТАЙМЛАЙН ИСТОРИИ АКТИВНОСТИ (activity_log) */}
+        {/* ТАЙМЛАЙН ДЕЙСТВИЙ (activity_log) */}
         <Card className="lg:col-span-7 space-y-4">
           <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center gap-2">
-            <Clock size={14} /> Таймлайн активности исследователя
+            <Clock size={14} /> Журнал активности исследователя
           </div>
-          <div className="space-y-2.5 max-h-72 overflow-y-auto">
-            {logs.map((l) => (
-              <div key={l.id} className="p-3 border-l-2 border-[#00C853] bg-[#050810] flex items-center justify-between text-xs">
-                <div>
-                  <span className="font-mono text-white font-medium">{l.action}</span>
-                  <span className="text-[#8A93A6] ml-2">({l.entity})</span>
+          <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+            {logs.length === 0 ? (
+              <div className="text-xs text-[#8A93A6] font-mono py-4">Журнал активности пуст.</div>
+            ) : (
+              logs.map((l) => (
+                <div key={l.id} className="p-3 border-l-2 border-[#00C853] bg-[#050810] flex items-center justify-between text-xs">
+                  <div>
+                    <span className="font-mono text-white font-medium">{l.action}</span>
+                    <span className="text-[#8A93A6] ml-2">({l.entity})</span>
+                  </div>
+                  <span className="font-mono text-[10px] text-[#4A5464]">
+                    {new Date(l.created_at).toLocaleString()}
+                  </span>
                 </div>
-                <span className="font-mono text-[10px] text-[#4A5464]">
-                  {new Date(l.created_at).toLocaleString()}
-                </span>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </Card>
       </div>
