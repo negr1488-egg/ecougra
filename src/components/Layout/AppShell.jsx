@@ -20,9 +20,9 @@ import {
 } from 'lucide-react';
 
 export default function AppShell() {
-  const { profile, notifications = [], unreadChatCount, markNotificationsRead, refreshProfile, hasRole, signOut } = useAuth();
+  const { profile, notifications = [], unreadChatCount, markNotificationsRead, hasRole, signOut } = useAuth();
   const [notifOpen, setNotifOpen] = useState(false);
-  const [notifFilter, setNotifFilter] = useState('all'); // all | unread
+  const [notifFilter, setNotifFilter] = useState('all');
   const [deletedNotifIds, setDeletedNotifIds] = useState([]);
   const [cookieAccepted, setCookieAccepted] = useState(() => localStorage.getItem('ugra_cookie_ok') === '1');
   const navigate = useNavigate();
@@ -33,13 +33,11 @@ export default function AppShell() {
 
   const unreadNotifCount = visibleNotifs.filter((n) => !n.read_at).length;
 
-  // Soft delete одного уведомления (оптимистично)
   const handleDeleteOneNotif = async (id) => {
     setDeletedNotifIds((prev) => [...prev, id]);
     await supabase.from('notifications').update({ deleted_at: new Date().toISOString() }).eq('id', id);
   };
 
-  // Очистить все уведомления разом (Soft delete)
   const handleClearAllNotifs = async () => {
     const allIds = visibleNotifs.map((n) => n.id);
     setDeletedNotifIds((prev) => [...prev, ...allIds]);
@@ -66,7 +64,7 @@ export default function AppShell() {
 
   return (
     <div className="min-h-screen bg-[#050810] text-zinc-100 flex flex-col justify-between">
-      {/* ВЕРХНЯЯ НАВИГАЦИЯ */}
+      {/* ШАПКА */}
       <header className="sticky top-0 z-40 border-b border-white/10 bg-[#050810]/95 backdrop-blur-xl">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
           <div onClick={() => navigate('/')} className="flex items-center gap-3 cursor-pointer">
@@ -105,7 +103,7 @@ export default function AppShell() {
             })}
           </nav>
 
-          {/* Правый блок: Streak + Центр уведомлений с управлением + Профиль */}
+          {/* ПРАВАЯ ЧАСТЬ ШАПКИ */}
           <div className="flex items-center gap-3 relative">
             <Badge color="gold">
               <Flame size={12} /> {profile?.streak_days || 1} дн.
@@ -126,9 +124,9 @@ export default function AppShell() {
               )}
             </button>
 
-            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ (С ФИЛЬТРАМИ И УДАЛЕНИЕМ) */}
+            {/* ИСПРАВЛЕННЫЙ ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ (НЕ ВЫЛЕЗАЕТ ЗА ЭКРАН) */}
             {notifOpen && (
-              <div className="absolute right-0 top-13 w-80 sm:w-96 bg-[#0a0f1c] border border-white/15 shadow-2xl p-4 z-50 space-y-3">
+              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#0a0f1c] border border-white/20 shadow-2xl p-4 z-50 space-y-3">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <span className="font-mono text-[10px] uppercase tracking-widest text-[#FFAA00]">
                     Уведомления ({visibleNotifs.length})
@@ -138,7 +136,7 @@ export default function AppShell() {
                       onClick={handleClearAllNotifs}
                       className="font-mono text-[10px] text-red-400 hover:underline flex items-center gap-1"
                     >
-                      <Trash2 size={11} /> Очистить все
+                      <Trash2 size={11} /> Очистить
                     </button>
                     <button onClick={() => setNotifOpen(false)} className="text-[#8A93A6] hover:text-white">
                       <X size={14} />
@@ -165,23 +163,22 @@ export default function AppShell() {
                   </button>
                 </div>
 
-                <div className="max-h-64 overflow-y-auto space-y-2">
+                <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
                   {visibleNotifs.length === 0 ? (
-                    <div className="text-xs text-[#8A93A6] py-6 text-center font-mono">Нет активных уведомлений</div>
+                    <div className="text-xs text-[#8A93A6] py-6 text-center font-mono">Нет уведомлений</div>
                   ) : (
                     visibleNotifs.map((n) => (
                       <div
                         key={n.id}
-                        className="p-2.5 border border-white/5 bg-[#050810] text-xs flex items-start justify-between gap-2 group"
+                        className="p-2.5 border border-white/5 bg-[#050810] text-xs flex items-start justify-between gap-2"
                       >
-                        <div>
+                        <div className="min-w-0">
                           <div className="font-mono text-[10px] text-[#34D399] uppercase">{n.type}</div>
-                          <div className="text-zinc-300 mt-0.5">{n.payload?.preview || 'Событие платформы'}</div>
+                          <div className="text-zinc-300 mt-0.5 break-words">{n.payload?.preview || 'Событие платформы'}</div>
                         </div>
                         <button
                           onClick={() => handleDeleteOneNotif(n.id)}
-                          className="text-[#8A93A6] hover:text-red-400 p-1"
-                          title="Удалить уведомление"
+                          className="text-[#8A93A6] hover:text-red-400 p-1 shrink-0"
                         >
                           <X size={13} />
                         </button>
@@ -212,7 +209,7 @@ export default function AppShell() {
         <Outlet />
       </main>
 
-      {/* ОФИЦИАЛЬНЫЙ FOOTER + ЮРИДИКА */}
+      {/* FOOTER */}
       <footer className="border-t border-white/10 bg-[#04060c] py-8 px-4 sm:px-8 mt-12 print:hidden">
         <div className="max-w-[1440px] mx-auto grid grid-cols-1 md:grid-cols-4 gap-6 text-xs text-[#8A93A6]">
           <div className="space-y-2">
@@ -240,19 +237,18 @@ export default function AppShell() {
           </div>
 
           <div className="space-y-1.5">
-            <div className="font-mono text-[10px] uppercase tracking-widest text-white mb-2">Авторы и контакты</div>
-            <div>Разработка: Команда «Зелёная Югра» (МБОУ «СОШ № 1» пгт. Пойковский)</div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-white mb-2">Авторы</div>
+            <div>Команда «Зелёная Югра» (МБОУ «СОШ № 1» пгт. Пойковский)</div>
             <div className="font-mono text-[11px] text-[#34D399] pt-1">© 2026 Все права защищены</div>
           </div>
         </div>
       </footer>
 
-      {/* COOKIE-БАННЕР */}
       {!cookieAccepted && (
         <div className="fixed bottom-4 right-4 left-4 sm:left-auto sm:max-w-md bg-[#0a0f1c] border border-[#00C853]/50 p-4 shadow-2xl z-50 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 text-xs text-zinc-200">
             <Cookie size={22} className="text-[#FFAA00] shrink-0" />
-            <span>Мы используем файлы Cookie для сохранения сессии и настроек платформы.</span>
+            <span>Мы используем файлы Cookie для сохранения сессии платформы.</span>
           </div>
           <Button
             size="sm"

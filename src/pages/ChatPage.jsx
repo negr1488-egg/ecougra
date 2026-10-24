@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, checkRateLimit, uploadFileToStorage } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
-import { Card, Button, Input, Avatar, Badge, Modal, useToast } from '../components/ui/DesignSystem';
+import { Card, Button, Avatar, Badge, Modal, useToast } from '../components/ui/DesignSystem';
 import {
   Send,
   Paperclip,
   Plus,
-  LogOut,
   Search,
   Pin,
   Reply,
@@ -17,10 +16,12 @@ import {
   Archive,
   BellOff,
   Bell,
-  Settings
+  Settings,
+  SmilePlus,
+  Check
 } from 'lucide-react';
 
-const EMOJIS = ['👍', '🔥', '🌲', '💡', '❤️'];
+const EMOJIS = ['👍', '❤️', '🔥', '🌲', '💡', '🎉'];
 
 export default function ChatPage() {
   const { user, profile, setUnreadChatCount } = useAuth();
@@ -40,6 +41,7 @@ export default function ChatPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [archivedIds, setArchivedIds] = useState([]);
   const [mutedIds, setMutedIds] = useState([]);
+  const [reactionMenuMsgId, setReactionMenuMsgId] = useState(null);
 
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUser, setTypingUser] = useState(null);
@@ -121,52 +123,68 @@ export default function ChatPage() {
     return () => supabase.removeChannel(channel);
   }, [activeChatId, user, profile?.username, queryClient]);
 
-  const handleSendOrEdit = async (e) => {
-    e.preventDefault();
-    if (!text.trim()) return;
-    try {
-      checkRateLimit('chat_send', 600);
-      const msgText = text.trim();
-      setText('');
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-      if (editingMsg) {
-        await supabase
+  // Мутация отправки / редактирования
+  const sendMutation = useMutation({
+    mutationFn: async ({ isEdit, content, editId }) => {
+      if (isEdit) {
+        const { error } = await supabase
           .from('chat_messages')
-          .update({ content: msgText, edited_at: new Date().toISOString() })
-          .eq('id', editingMsg.id);
-        setEditingMsg(null);
+          .update({ content, edited_at: new Date().toISOString() })
+          .eq('id', editId);
+        if (error) throw error;
       } else {
-        await supabase.from('chat_messages').insert([
+        const { error } = await supabase.from('chat_messages').insert([
           {
             chat_id: activeChatId,
             author_id: user.id,
-            content: msgText,
+            content,
             reply_to_id: replyTo?.id || null
           }
         ]);
-        setReplyTo(null);
-
-        // Проверяем упоминания @username и шлём уведомление
-        const mentions = msgText.match(/@[a-zA-Z0-9_]+/g) || [];
-        for (const m of mentions) {
-          const target = allProfiles.find((p) => p.username?.toLowerCase() === m.toLowerCase());
-          if (target && target.id !== user.id) {
-            await supabase.from('notifications').insert([
-              {
-                user_id: target.id,
-                type: 'mention',
-                payload: { preview: `${profile?.username} упомянул вас в чате: "${msgText.slice(0, 45)}..."` }
-              }
-            ]);
-          }
-        }
+        if (error) throw error;
       }
+    },
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chat_messages_ext', activeChatId] });
-    } catch (err) {
-      toast(err.message, 'error');
-    }
+      setText('');
+      setEditingMsg(null);
+      setReplyTo(null);
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  const handleSendOrEdit = (e) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    checkRateLimit('chat_send', 500);
+    sendMutation.mutate({
+      isEdit: Boolean(editingMsg),
+      content: text.trim(),
+      editId: editingMsg?.id
+    });
   };
 
+  // Мутация мягкого удаления (soft delete)
+  const deleteMutation = useMutation({
+    mutationFn: async (msgId) => {
+      const { error } = await supabase
+        .from('chat_messages')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', msgId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_ext', activeChatId] });
+      toast('Сообщение удалено', 'info');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // Мутация реакций
   const toggleReaction = async (msg, emoji) => {
     const current = msg.reactions || {};
     const usersForEmoji = current[emoji] || [];
@@ -176,6 +194,8 @@ export default function ChatPage() {
       : [...usersForEmoji, myUname];
 
     const updated = { ...current, [emoji]: nextUsers };
+    setReactionMenuMsgId(null);
+
     await supabase.from('chat_messages').update({ reactions: updated }).eq('id', msg.id);
     queryClient.invalidateQueries({ queryKey: ['chat_messages_ext', activeChatId] });
   };
@@ -183,13 +203,7 @@ export default function ChatPage() {
   const togglePinMessage = async (msg) => {
     await supabase.from('chat_messages').update({ is_pinned: !msg.is_pinned }).eq('id', msg.id);
     queryClient.invalidateQueries({ queryKey: ['chat_messages_ext', activeChatId] });
-    toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Сообщение закреплено вверху чата', 'info');
-  };
-
-  const softDeleteMessage = async (msgId) => {
-    await supabase.from('chat_messages').update({ deleted_at: new Date().toISOString() }).eq('id', msgId);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_ext', activeChatId] });
-    toast('Сообщение удалено', 'info');
+    toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Сообщение закреплено', 'info');
   };
 
   const handleFileAttach = async (e) => {
@@ -212,27 +226,6 @@ export default function ChatPage() {
     }
   };
 
-  const startDirectMessageWithUser = async (targetProfile) => {
-    try {
-      const { data: dmChatId, error } = await supabase.rpc('get_or_create_direct_chat', {
-        target_user_id: targetProfile.id
-      });
-      if (error) throw error;
-      await queryClient.invalidateQueries({ queryKey: ['chats_extended'] });
-      setActiveChatId(dmChatId);
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  };
-
-  const handleDeleteChatByOwner = async () => {
-    await supabase.from('chats').update({ deleted_at: new Date().toISOString() }).eq('id', activeChatId);
-    await queryClient.invalidateQueries({ queryKey: ['chats_extended'] });
-    setActiveChatId('aaaa1111-1111-1111-1111-111111111111');
-    setSettingsModal(false);
-    toast('Чат удалён владельцем (Soft Delete)', 'info');
-  };
-
   const currentChat = chats.find((c) => c.id === activeChatId) || chats[0];
   const pinnedMessages = messages.filter((m) => m.is_pinned);
   const filteredMessages = messages.filter(
@@ -242,24 +235,10 @@ export default function ChatPage() {
     showArchived ? archivedIds.includes(c.id) : !archivedIds.includes(c.id)
   );
 
-  // Подсветка упоминаний @username в тексте
-  const renderHighlightedContent = (txt = '') => {
-    const parts = txt.split(/(@[a-zA-Z0-9_]+)/g);
-    return parts.map((part, i) =>
-      part.startsWith('@') ? (
-        <span key={i} className="px-1 bg-[#FFAA00]/20 text-[#FFAA00] font-mono font-bold rounded">
-          {part}
-        </span>
-      ) : (
-        part
-      )
-    );
-  };
-
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-      {/* ЛЕВАЯ ПАНЕЛЬ: СПИСОК ЧАТОВ, АРХИВ И БЫСТРЫЕ ЛС */}
-      <Card className="lg:col-span-4 flex flex-col justify-between space-y-5">
+      {/* ЛЕВАЯ ПАНЕЛЬ */}
+      <Card className="lg:col-span-4 flex flex-col justify-between space-y-4">
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex gap-2">
@@ -269,7 +248,7 @@ export default function ChatPage() {
                   !showArchived ? 'border-[#00C853] text-[#34D399]' : 'border-white/10 text-[#8A93A6]'
                 }`}
               >
-                Активные ({chats.length - archivedIds.length})
+                Чаты ({chats.length - archivedIds.length})
               </button>
               <button
                 onClick={() => setShowArchived(true)}
@@ -289,55 +268,37 @@ export default function ChatPage() {
           </div>
 
           <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-            {visibleChats.map((ch) => {
-              const isMuted = mutedIds.includes(ch.id);
-              return (
-                <div
-                  key={ch.id}
-                  onClick={() => setActiveChatId(ch.id)}
-                  className={`p-2.5 border transition-all flex items-center justify-between cursor-pointer ${
-                    activeChatId === ch.id
-                      ? 'border-[#00C853] bg-[#00C853]/10 text-white'
-                      : 'border-white/5 bg-[#050810] text-zinc-300 hover:text-white'
-                  }`}
-                >
-                  <span className="font-mono text-xs truncate">
-                    {isMuted && '🔇 '}
-                    {ch.title}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setArchivedIds((prev) =>
-                          prev.includes(ch.id) ? prev.filter((id) => id !== ch.id) : [...prev, ch.id]
-                        );
-                      }}
-                      className="text-[#8A93A6] hover:text-[#FFAA00]"
-                      title="В архив / Из архива"
-                    >
-                      <Archive size={12} />
-                    </button>
-                    <Badge color={ch.type === 'direct' ? 'cyan' : 'emerald'}>{ch.type}</Badge>
-                  </div>
-                </div>
-              );
-            })}
+            {visibleChats.map((ch) => (
+              <div
+                key={ch.id}
+                onClick={() => setActiveChatId(ch.id)}
+                className={`p-2.5 border transition-all flex items-center justify-between cursor-pointer ${
+                  activeChatId === ch.id
+                    ? 'border-[#00C853] bg-[#00C853]/10 text-white'
+                    : 'border-white/5 bg-[#050810] text-zinc-300 hover:text-white'
+                }`}
+              >
+                <span className="font-mono text-xs truncate">
+                  {mutedIds.includes(ch.id) && '🔇 '}
+                  {ch.title}
+                </span>
+                <Badge color={ch.type === 'direct' ? 'cyan' : 'emerald'}>{ch.type}</Badge>
+              </div>
+            ))}
           </div>
 
-          {/* Написать участнику лично */}
           <div className="pt-3 border-t border-white/10 space-y-2">
             <div className="font-mono text-[10px] uppercase tracking-widest text-[#34D399]">
-              Написать лично (@username):
+              Написать участнику:
             </div>
             <input
               type="text"
               value={userSearch}
               onChange={(e) => setUserSearch(e.target.value)}
-              placeholder="Найти собеседника..."
+              placeholder="Поиск по имени или нику..."
               className="w-full bg-[#050810] border border-white/10 px-3 py-1.5 text-xs text-white"
             />
-            <div className="space-y-1 max-h-40 overflow-y-auto">
+            <div className="space-y-1 max-h-36 overflow-y-auto">
               {allProfiles
                 .filter(
                   (p) =>
@@ -348,31 +309,37 @@ export default function ChatPage() {
                 .map((u) => (
                   <div
                     key={u.id}
-                    onClick={() => startDirectMessageWithUser(u)}
-                    className="p-2 border border-white/5 bg-[#050810] hover:border-[#00C853] flex items-center justify-between cursor-pointer text-xs"
+                    onClick={async () => {
+                      const { data } = await supabase.rpc('get_or_create_direct_chat', { target_user_id: u.id });
+                      if (data) {
+                        queryClient.invalidateQueries({ queryKey: ['chats_extended'] });
+                        setActiveChatId(data);
+                      }
+                    }}
+                    className="p-1.5 border border-white/5 bg-[#050810] hover:border-[#00C853] flex items-center justify-between cursor-pointer text-xs"
                   >
                     <span className="font-mono text-[#FFAA00] truncate">{u.username}</span>
-                    <span className="text-[10px] font-mono text-[#34D399]">ЛС →</span>
+                    <span className="text-[10px] text-[#34D399]">ЛС →</span>
                   </div>
                 ))}
             </div>
           </div>
         </div>
 
-        <div className="pt-3 border-t border-white/10 font-mono text-[10px] text-[#34D399]">
-          ● Онлайн в комнате ({onlineUsers.length}): {onlineUsers.join(', ')}
+        <div className="pt-2 border-t border-white/10 font-mono text-[10px] text-[#34D399]">
+          ● Онлайн в чате: {onlineUsers.length} чел.
         </div>
       </Card>
 
-      {/* ПРАВАЯ КОЛОНКА: ОКНО СООБЩЕНИЙ */}
-      <Card className="lg:col-span-8 flex flex-col justify-between h-[650px]">
-        {/* Шапка чата с поиском, мьютом и настройками */}
-        <div className="space-y-2 border-b border-white/10 pb-3">
+      {/* ПРАВАЯ ПАНЕЛЬ: ОКНО ЧАТА */}
+      <Card className="lg:col-span-8 flex flex-col justify-between h-[650px] relative">
+        {/* Шапка чата */}
+        <div className="border-b border-white/10 pb-3 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-base font-medium text-white">{currentChat?.title}</h2>
               <div className="font-mono text-[10px] text-[#34D399]">
-                {typingUser ? `✍ ${typingUser} печатает...` : 'Realtime · Поддержка @упоминаний, реакций и цитат'}
+                {typingUser ? `✍ ${typingUser} печатает...` : 'Защищённый Realtime канал'}
               </div>
             </div>
 
@@ -383,11 +350,10 @@ export default function ChatPage() {
                   type="text"
                   value={msgSearch}
                   onChange={(e) => setMsgSearch(e.target.value)}
-                  placeholder="Поиск в чате..."
-                  className="bg-[#050810] border border-white/10 pl-7 pr-2 py-1 text-xs text-white w-36"
+                  placeholder="Поиск..."
+                  className="bg-[#050810] border border-white/10 pl-7 pr-2 py-1 text-xs text-white w-32"
                 />
               </div>
-
               <button
                 onClick={() =>
                   setMutedIds((prev) =>
@@ -395,42 +361,32 @@ export default function ChatPage() {
                   )
                 }
                 className="p-1.5 border border-white/10 text-[#8A93A6] hover:text-white"
-                title="Приглушить уведомления (Мьют)"
               >
                 {mutedIds.includes(activeChatId) ? <BellOff size={14} className="text-[#FFAA00]" /> : <Bell size={14} />}
-              </button>
-
-              <button
-                onClick={() => setSettingsModal(true)}
-                className="p-1.5 border border-white/10 text-[#8A93A6] hover:text-white"
-                title="Настройки чата"
-              >
-                <Settings size={14} />
               </button>
             </div>
           </div>
 
-          {/* Закреплённые сообщения вверху */}
           {pinnedMessages.length > 0 && (
-            <div className="p-2 bg-[#FFAA00]/10 border border-[#FFAA00]/30 flex items-center justify-between text-xs">
-              <div className="truncate">
-                <Pin size={12} className="inline text-[#FFAA00] mr-1.5" />
-                <strong className="font-mono text-[#FFAA00]">Закреплено:</strong>{' '}
-                <span className="text-zinc-200">{pinnedMessages[pinnedMessages.length - 1].content}</span>
-              </div>
+            <div className="p-2 bg-[#FFAA00]/10 border border-[#FFAA00]/30 text-xs flex items-center justify-between">
+              <span className="truncate">
+                <Pin size={12} className="inline mr-1 text-[#FFAA00]" />
+                <strong>Закреплено:</strong> {pinnedMessages[pinnedMessages.length - 1].content}
+              </span>
             </div>
           )}
         </div>
 
-        {/* Лента сообщений */}
+        {/* Сообщения */}
         <div className="flex-1 overflow-y-auto py-4 space-y-3 pr-2">
           {filteredMessages.map((m) => {
             const isMine = m.author_id === user?.id;
             const authorUname = m.profiles?.username || '@user';
             const parentMsg = m.reply_to_id ? messages.find((x) => x.id === m.reply_to_id) : null;
+            const reactions = m.reactions || {};
 
             return (
-              <div key={m.id} className={`flex items-start gap-3 ${isMine ? 'flex-row-reverse' : ''}`}>
+              <div key={m.id} className={`flex items-start gap-3 ${isMine ? 'flex-row-reverse' : ''} group`}>
                 <Avatar
                   src={m.profiles?.avatar_url}
                   username={authorUname}
@@ -440,29 +396,36 @@ export default function ChatPage() {
                 />
 
                 <div
-                  className={`p-3.5 border max-w-lg space-y-1.5 ${
+                  className={`p-3.5 border max-w-lg space-y-1.5 relative ${
                     isMine ? 'border-[#00C853]/40 bg-[#00C853]/10' : 'border-white/10 bg-[#050810]'
                   }`}
                 >
-                  {/* Цитата (Reply) */}
                   {parentMsg && (
-                    <div className="p-2 border-l-2 border-[#FFAA00] bg-black/40 text-[11px] text-[#8A93A6]">
-                      <div className="font-mono text-[#FFAA00]">{parentMsg.profiles?.username || '@user'}</div>
-                      <div className="truncate">{parentMsg.content}</div>
+                    <div className="p-1.5 border-l-2 border-[#FFAA00] bg-black/40 text-[11px] text-[#8A93A6] mb-1">
+                      <span className="text-[#FFAA00] font-mono">{parentMsg.profiles?.username}:</span> {parentMsg.content}
                     </div>
                   )}
 
                   <div className="flex items-center justify-between gap-4 font-mono text-[10px]">
                     <span className="text-[#FFAA00] font-bold">{authorUname}</span>
                     <div className="flex items-center gap-1.5 text-[#8A93A6]">
-                      {m.edited_at && <span>(изменено)</span>}
+                      {m.edited_at && <span className="text-zinc-400 italic">изменено</span>}
                       <span>{new Date(m.created_at).toLocaleTimeString().slice(0, 5)}</span>
-                      <button onClick={() => setReplyTo(m)} className="hover:text-white" title="Ответить">
-                        <Reply size={11} />
+
+                      <button
+                        onClick={() => setReactionMenuMsgId(reactionMenuMsgId === m.id ? null : m.id)}
+                        className="hover:text-[#FFAA00] p-0.5"
+                        title="Поставить реакцию"
+                      >
+                        <SmilePlus size={12} />
                       </button>
-                      <button onClick={() => togglePinMessage(m)} className="hover:text-[#FFAA00]" title="Закрепить">
-                        <Pin size={11} />
+                      <button onClick={() => setReplyTo(m)} className="hover:text-white p-0.5" title="Ответить">
+                        <Reply size={12} />
                       </button>
+                      <button onClick={() => togglePinMessage(m)} className="hover:text-[#FFAA00] p-0.5" title="Закрепить">
+                        <Pin size={12} />
+                      </button>
+
                       {isMine && (
                         <>
                           <button
@@ -470,69 +433,63 @@ export default function ChatPage() {
                               setEditingMsg(m);
                               setText(m.content);
                             }}
-                            className="hover:text-[#22D3EE]"
+                            className="hover:text-[#22D3EE] p-0.5"
                             title="Редактировать"
                           >
-                            <Edit2 size={11} />
+                            <Edit2 size={12} />
                           </button>
                           <button
-                            onClick={() => softDeleteMessage(m.id)}
-                            className="hover:text-red-400"
+                            onClick={() => deleteMutation.mutate(m.id)}
+                            className="hover:text-red-400 p-0.5"
                             title="Удалить"
                           >
-                            <Trash2 size={11} />
+                            <Trash2 size={12} />
                           </button>
                         </>
                       )}
                     </div>
                   </div>
 
-                  <p className="text-xs text-zinc-100 leading-relaxed whitespace-pre-wrap">
-                    {renderHighlightedContent(m.content)}
-                  </p>
+                  <p className="text-xs text-zinc-100 whitespace-pre-wrap leading-relaxed">{m.content}</p>
 
-                  {/* Вложения с превью изображений */}
-                  {Array.isArray(m.attachments) &&
-                    m.attachments.map((att, idx) =>
-                      att.type?.startsWith('image/') ? (
-                        <img
-                          key={idx}
-                          src={att.url}
-                          alt={att.name}
-                          className="mt-2 max-h-48 rounded border border-white/10"
-                        />
-                      ) : (
-                        <a
-                          key={idx}
-                          href={att.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-2 inline-block px-2.5 py-1 bg-white/5 border border-[#22D3EE]/40 font-mono text-[10px] text-[#22D3EE]"
-                        >
-                          📎 {att.name}
-                        </a>
-                      )
-                    )}
-
-                  {/* Эмодзи-реакции */}
-                  <div className="flex flex-wrap items-center gap-1 pt-1">
-                    {EMOJIS.map((em) => {
-                      const count = (m.reactions?.[em] || []).length;
-                      return (
+                  {/* Всплывающее меню реакций */}
+                  {reactionMenuMsgId === m.id && (
+                    <div className="absolute top-0 right-0 -mt-8 bg-[#0a0f1c] border border-white/20 rounded-full px-2 py-1 flex gap-1 z-30 shadow-xl">
+                      {EMOJIS.map((em) => (
                         <button
                           key={em}
                           onClick={() => toggleReaction(m, em)}
-                          className={`px-1.5 py-0.5 text-[10px] rounded border ${
-                            count > 0
-                              ? 'border-[#00C853]/50 bg-[#00C853]/20 text-white'
-                              : 'border-white/5 bg-black/20 text-[#8A93A6] hover:border-white/20'
-                          }`}
+                          className="hover:scale-125 transition-transform text-sm"
                         >
-                          {em} {count > 0 && count}
+                          {em}
                         </button>
-                      );
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Аккуратные бейджи реакций */}
+                  {Object.keys(reactions).length > 0 && (
+                    <div className="flex flex-wrap gap-1 pt-1.5">
+                      {Object.entries(reactions).map(([em, users]) => {
+                        if (!users.length) return null;
+                        const hasMy = users.includes(profile?.username);
+                        return (
+                          <button
+                            key={em}
+                            onClick={() => toggleReaction(m, em)}
+                            className={`px-2 py-0.5 rounded-full text-[11px] font-mono flex items-center gap-1 border transition-all ${
+                              hasMy
+                                ? 'bg-[#00C853]/20 border-[#00C853] text-[#34D399]'
+                                : 'bg-white/5 border-white/10 text-zinc-400 hover:border-white/30'
+                            }`}
+                          >
+                            <span>{em}</span>
+                            <span>{users.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -540,27 +497,28 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Плашка ответа или редактирования */}
-        {(replyTo || editingMsg) && (
-          <div className="px-3 py-1.5 bg-[#050810] border-t border-[#FFAA00]/40 flex items-center justify-between text-xs font-mono">
-            <span className="text-[#FFAA00] truncate">
-              {editingMsg ? `✎ Редактирование: ${editingMsg.content}` : `↩ Ответ для ${replyTo.profiles?.username}: ${replyTo.content}`}
+        {/* Индикатор редактирования / цитирования */}
+        {(editingMsg || replyTo) && (
+          <div className="px-4 py-2 bg-[#050810] border-t border-[#FFAA00]/40 flex items-center justify-between text-xs font-mono text-[#FFAA00]">
+            <span>
+              {editingMsg ? `✎ Редактирование сообщения` : `↩ Ответ для ${replyTo?.profiles?.username}`}
             </span>
             <button
               onClick={() => {
-                setReplyTo(null);
                 setEditingMsg(null);
+                setReplyTo(null);
                 setText('');
               }}
-              className="text-red-400 ml-2"
+              className="text-red-400 hover:text-red-300"
             >
-              ✕
+              ✕ Отмена
             </button>
           </div>
         )}
 
+        {/* Форма ввода */}
         <form onSubmit={handleSendOrEdit} className="pt-3 border-t border-white/10 flex items-center gap-2">
-          <label className="p-2.5 border border-white/10 hover:border-[#FFAA00] text-[#8A93A6] hover:text-white cursor-pointer">
+          <label className="p-2.5 border border-white/10 text-[#8A93A6] hover:text-white cursor-pointer">
             <Paperclip size={16} />
             <input type="file" onChange={handleFileAttach} className="hidden" />
           </label>
@@ -568,50 +526,16 @@ export default function ChatPage() {
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Сообщение (используйте @username для упоминания)..."
-            className="flex-1 bg-[#050810] border border-white/10 px-4 py-2.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
+            placeholder={editingMsg ? 'Измените текст...' : 'Напишите сообщение...'}
+            className="flex-1 bg-[#050810] border border-white/10 px-4 py-2 text-xs text-white focus:outline-none focus:border-[#00C853]"
           />
-          <Button type="submit" size="md">
-            <Send size={14} /> {editingMsg ? 'Сохранить' : 'Отправить'}
+          <Button type="submit" size="md" disabled={sendMutation.isPending}>
+            {editingMsg ? <Check size={14} /> : <Send size={14} />}
           </Button>
         </form>
       </Card>
 
-      {/* Настройки чата */}
-      <Modal isOpen={settingsModal} onClose={() => setSettingsModal(false)} title="Настройки и управление чатом">
-        <div className="space-y-4">
-          <Input
-            label="Пригласить участника по @username"
-            value={inviteUsername}
-            onChange={(e) => setInviteUsername(e.target.value)}
-            placeholder="@username"
-          />
-          <Button
-            size="sm"
-            onClick={async () => {
-              const target = allProfiles.find(
-                (p) => p.username?.toLowerCase() === inviteUsername.trim().toLowerCase()
-              );
-              if (!target) return toast('Пользователь не найден', 'error');
-              await supabase.from('chat_members').upsert([{ chat_id: activeChatId, user_id: target.id, role: 'member' }]);
-              toast(`Участник ${target.username} добавлен в чат!`, 'success');
-              setInviteUsername('');
-            }}
-          >
-            Пригласить в чат
-          </Button>
-
-          {currentChat?.owner_id === user?.id && (
-            <div className="pt-4 border-t border-white/10">
-              <Button variant="danger" onClick={handleDeleteChatByOwner} className="w-full">
-                Удалить чат владельцем (Soft Delete)
-              </Button>
-            </div>
-          )}
-        </div>
-      </Modal>
-
-      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать новый канал">
+      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать канал">
         <form
           onSubmit={async (e) => {
             e.preventDefault();
@@ -625,12 +549,13 @@ export default function ChatPage() {
               queryClient.invalidateQueries({ queryKey: ['chats_extended'] });
               setActiveChatId(data.id);
               setNewChatModal(false);
+              setNewChatTitle('');
             }
           }}
           className="space-y-4"
         >
-          <Input label="Название чата" value={newChatTitle} onChange={(e) => setNewChatTitle(e.target.value)} required />
-          <Button type="submit" className="w-full">Создать</Button>
+          <Input label="Название канала" value={newChatTitle} onChange={(e) => setNewChatTitle(e.target.value)} required />
+          <Button type="submit" className="w-full">Создать канал</Button>
         </form>
       </Modal>
     </div>
