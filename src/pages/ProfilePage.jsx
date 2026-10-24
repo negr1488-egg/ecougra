@@ -1,0 +1,295 @@
+import React, { useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { supabase, uploadFileToStorage } from '../lib/supabaseClient';
+import { useAuth } from '../context/AuthContext';
+import { Card, Button, Input, Avatar, Badge, Skeleton, useToast } from '../components/ui/DesignSystem';
+import { FileDown, UserCheck, MessageSquare, Lock, Clock } from 'lucide-react';
+
+export default function ProfilePage() {
+  const { username: routeUsername } = useParams();
+  const { user, profile: myProfile, refreshProfile } = useAuth();
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const [mentorInput, setMentorInput] = useState('');
+  const [editBio, setEditBio] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
+
+  const targetUname = routeUsername ? (routeUsername.startsWith('@') ? routeUsername : `@${routeUsername}`) : myProfile?.username;
+  const isOwnProfile = !routeUsername || targetUname === myProfile?.username;
+
+  const { data: profileData, isLoading } = useQuery({
+    queryKey: ['profile_view', targetUname],
+    enabled: Boolean(targetUname),
+    queryFn: async () => {
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('*, organizations(name, type, city), user_roles(roles(name))')
+        .eq('username', targetUname)
+        .maybeSingle();
+
+      if (!prof) return null;
+
+      const [logsRes, mentorsRes] = await Promise.all([
+        supabase.from('activity_log').select('*').eq('user_id', prof.id).order('created_at', { ascending: false }).limit(10),
+        supabase
+          .from('mentor_links')
+          .select('*, student:profiles!mentor_links_student_id_fkey(username, full_name), mentor:profiles!mentor_links_mentor_id_fkey(username, full_name)')
+          .or(`student_id.eq.${prof.id},mentor_id.eq.${prof.id}`)
+      ]);
+
+      return {
+        prof,
+        roles: (prof.user_roles || []).map((r) => r.roles?.name).filter(Boolean),
+        logs: logsRes.data || [],
+        mentorLinks: mentorsRes.data || []
+      };
+    }
+  });
+
+  const updateProfileMutation = useMutation({
+    mutationFn: async (patch) => {
+      const { error } = await supabase.from('profiles').update(patch).eq('id', user.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_view'] });
+      refreshProfile();
+      setIsEditing(false);
+      toast('Настройки профиля сохранены!', 'success');
+    },
+    onError: (e) => toast(e.message, 'error')
+  });
+
+  const handleAvatarChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      toast('Загрузка аватара...', 'info');
+      const url = await uploadFileToStorage('avatars', user.id, file);
+      updateProfileMutation.mutate({ avatar_url: url });
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  const requestMentorMutation = useMutation({
+    mutationFn: async (identifier) => {
+      const clean = identifier.trim();
+      const { data: mentorProf } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .eq('username', clean.startsWith('@') ? clean : `@${clean}`)
+        .maybeSingle();
+      if (!mentorProf) throw new Error('Наставник с таким @username не найден');
+
+      const { error } = await supabase.from('mentor_links').insert([{
+        student_id: user.id,
+        mentor_id: mentorProf.id,
+        status: 'pending'
+      }]);
+      if (error) throw error;
+
+      await supabase.from('notifications').insert([{
+        user_id: mentorProf.id,
+        type: 'mentor_request',
+        payload: { preview: `Запрос на наставничество от ${myProfile?.username}` }
+      }]);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_view'] });
+      setMentorInput('');
+      toast('Запрос наставнику отправлен!', 'success');
+    },
+    onError: (e) => toast(e.message, 'error')
+  });
+
+  const confirmMentorLink = async (linkId, status) => {
+    await supabase.from('mentor_links').update({ status }).eq('id', linkId);
+    queryClient.invalidateQueries({ queryKey: ['profile_view'] });
+    toast(`Статус наставничества: ${status}`, 'success');
+  };
+
+  if (isLoading) return <Skeleton className="h-80 w-full" />;
+  if (!profileData?.prof) {
+    return <Card className="p-8 text-center font-mono text-sm text-[#8A93A6]">Профиль {targetUname} не найден.</Card>;
+  }
+
+  const { prof, roles, logs, mentorLinks } = profileData;
+  const isPrivateAndHidden = !isOwnProfile && prof.privacy?.show_profile === 'private';
+
+  if (isPrivateAndHidden) {
+    return (
+      <Card className="p-12 text-center space-y-4">
+        <Lock size={32} className="mx-auto text-[#FFAA00]" />
+        <h2 className="text-xl font-light text-white">Это приватный профиль ({prof.username})</h2>
+        <p className="text-xs text-[#8A93A6]">Пользователь ограничил публичный просмотр своей страницы в настройках приватности.</p>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-8 print:bg-white print:text-black">
+      {/* КАРТОЧКА ПРОФИЛЯ */}
+      <Card className="p-8">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+            <div className="relative">
+              <Avatar src={prof.avatar_url} username={prof.username} status={prof.status} size="lg" />
+              {isOwnProfile && (
+                <label className="absolute -bottom-1 -right-1 px-1.5 py-0.5 bg-[#FFAA00] text-[#050810] font-mono text-[9px] font-bold cursor-pointer">
+                  ФОТО
+                  <input type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
+                </label>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-base font-bold text-[#FFAA00]">{prof.username}</span>
+                {(roles.length ? roles : ['student']).map((r) => (
+                  <Badge key={r} color={r === 'admin' || r === 'dev' ? 'red' : r === 'jury' ? 'gold' : 'emerald'}>
+                    {r}
+                  </Badge>
+                ))}
+              </div>
+              <h1 className="text-2xl font-light text-white">{prof.full_name}</h1>
+              <div className="text-xs text-[#8A93A6]">
+                {prof.organizations?.name || 'ХМАО — Югра'} · Опыт: <strong className="text-[#34D399]">{prof.xp} XP</strong> · Streak: 🔥 {prof.streak_days} дн.
+              </div>
+            </div>
+          </div>
+
+          {/* Действия */}
+          <div className="flex flex-wrap gap-2 print:hidden">
+            {isOwnProfile ? (
+              <>
+                <select
+                  value={prof.status || 'online'}
+                  onChange={(e) => updateProfileMutation.mutate({ status: e.target.value })}
+                  className="bg-[#050810] border border-white/15 px-3 py-2 font-mono text-xs text-white"
+                >
+                  <option value="online">🟢 Онлайн</option>
+                  <option value="away">🟡 Отошёл</option>
+                  <option value="dnd">🔴 Не беспокоить</option>
+                </select>
+                <Button variant="outline" size="sm" onClick={() => { setEditBio(prof.bio || ''); setIsEditing(!isEditing); }}>
+                  Настройки
+                </Button>
+                <Button variant="gold" size="sm" onClick={() => window.print()}>
+                  <FileDown size={14} /> Экспорт в PDF
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button size="sm" onClick={() => navigate('/chat')}>
+                  <MessageSquare size={14} /> Написать
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => requestMentorMutation.mutate(prof.username)}>
+                  <UserCheck size={14} /> Сделать наставником
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <p className="mt-5 text-xs text-zinc-300 border-l-2 border-[#00C853] pl-3">
+          {prof.bio || 'Исследователь экологических технологий нефтедобычи ХМАО-Югры.'}
+        </p>
+
+        {/* Редактирование Bio и Приватности */}
+        {isOwnProfile && isEditing && (
+          <div className="mt-6 pt-6 border-t border-white/10 space-y-4 print:hidden">
+            <Input label="О себе (Bio)" value={editBio} onChange={(e) => setEditBio(e.target.value)} />
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <label className="font-mono text-[10px] uppercase text-[#8A93A6]">Видимость профиля:</label>
+              <select
+                value={prof.privacy?.show_profile || 'public'}
+                onChange={(e) =>
+                  updateProfileMutation.mutate({
+                    bio: editBio,
+                    privacy: { ...prof.privacy, show_profile: e.target.value }
+                  })
+                }
+                className="bg-[#050810] border border-white/15 px-3 py-1.5 text-xs text-white"
+              >
+                <option value="public">Публичный (виден всем)</option>
+                <option value="private">Приватный (только по запросу)</option>
+              </select>
+              <Button size="sm" onClick={() => updateProfileMutation.mutate({ bio: editBio })}>
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* ПРИВЯЗКА УЧЕНИК <-> УЧИТЕЛЬ (mentor_links) */}
+        <Card className="lg:col-span-5 space-y-4">
+          <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00]">
+            Система наставничества (Ученик ↔ Учитель)
+          </div>
+          {isOwnProfile && (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={mentorInput}
+                onChange={(e) => setMentorInput(e.target.value)}
+                placeholder="Введите @username наставника..."
+                className="flex-1 bg-[#050810] border border-white/10 px-3 py-2 text-xs font-mono text-white"
+              />
+              <Button size="sm" onClick={() => requestMentorMutation.mutate(mentorInput)}>
+                Привязать
+              </Button>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {mentorLinks.length === 0 ? (
+              <div className="text-xs text-[#8A93A6] font-mono py-4">Активных связей с наставниками пока нет.</div>
+            ) : (
+              mentorLinks.map((lnk) => (
+                <div key={lnk.id} className="p-3 border border-white/10 bg-[#050810] flex items-center justify-between text-xs">
+                  <div>
+                    <div className="font-mono text-[#FFAA00]">
+                      {lnk.student?.username} ↔ {lnk.mentor?.username}
+                    </div>
+                    <div className="text-[10px] text-[#8A93A6]">Статус: {lnk.status}</div>
+                  </div>
+                  {isOwnProfile && lnk.mentor_id === user?.id && lnk.status === 'pending' && (
+                    <Button size="sm" onClick={() => confirmMentorLink(lnk.id, 'active')}>
+                      Подтвердить
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+
+        {/* ТАЙМЛАЙН ИСТОРИИ АКТИВНОСТИ (activity_log) */}
+        <Card className="lg:col-span-7 space-y-4">
+          <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center gap-2">
+            <Clock size={14} /> Таймлайн активности исследователя
+          </div>
+          <div className="space-y-2.5 max-h-72 overflow-y-auto">
+            {logs.map((l) => (
+              <div key={l.id} className="p-3 border-l-2 border-[#00C853] bg-[#050810] flex items-center justify-between text-xs">
+                <div>
+                  <span className="font-mono text-white font-medium">{l.action}</span>
+                  <span className="text-[#8A93A6] ml-2">({l.entity})</span>
+                </div>
+                <span className="font-mono text-[10px] text-[#4A5464]">
+                  {new Date(l.created_at).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
