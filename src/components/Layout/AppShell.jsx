@@ -16,7 +16,9 @@ import {
   Flame,
   X,
   Trash2,
-  Cookie
+  Cookie,
+  Radio,
+  Cpu
 } from 'lucide-react';
 
 export default function AppShell() {
@@ -63,21 +65,35 @@ export default function AppShell() {
   }
 
   return (
-    <div className="min-h-screen bg-[#04060c] text-zinc-100 flex flex-col justify-between relative overflow-x-hidden selection:bg-[#00C853]/30 selection:text-white">
-      {/* ДЕКОРАТИВНЫЕ СЛОИ ГЛУБИНЫ И СВЕЧЕНИЯ ЗАДНЕГО ФОНА */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        {/* Изумрудное мягкое свечение в левом верхнем углу */}
-        <div className="absolute -top-40 -left-40 w-[600px] h-[600px] bg-[#00C853]/10 rounded-full blur-[140px]" />
-        {/* Янтарное свечение в правом нижнем углу */}
-        <div className="absolute top-1/3 -right-40 w-[550px] h-[550px] bg-[#FFAA00]/08 rounded-full blur-[160px]" />
-        {/* Холодный глубокий циан по центру */}
-        <div className="absolute -bottom-20 left-1/3 w-[500px] h-[500px] bg-[#0077b6]/08 rounded-full blur-[150px]" />
-        {/* Инженерная микросетка */}
-        <div className="absolute inset-0 bg-[radial-gradient(#ffffff0a_1px,transparent_1px)] [background-size:24px_24px] opacity-60" />
+    <div className="min-h-screen bg-[#030509] text-zinc-100 flex flex-col justify-between relative overflow-x-hidden selection:bg-[#00C853]/30 selection:text-white">
+      {/* МНОГОСЛОЙНЫЙ ГЛУБОКИЙ КИБЕР-ЭКОЛОГИЧЕСКИЙ ФОН */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        {/* Градиентные туманности */}
+        <div className="absolute -top-32 -left-32 w-[650px] h-[650px] bg-gradient-to-br from-[#00C853]/15 to-transparent rounded-full blur-[140px] animate-pulse" style={{ animationDuration: '8s' }} />
+        <div className="absolute top-1/4 -right-40 w-[600px] h-[600px] bg-gradient-to-bl from-[#FFAA00]/10 to-transparent rounded-full blur-[160px]" />
+        <div className="absolute -bottom-32 left-1/4 w-[700px] h-[700px] bg-gradient-to-tr from-[#0077b6]/12 to-transparent rounded-full blur-[170px]" />
+
+        {/* Геометрическая сетка и телеметрические метки Югры */}
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff05_1px,transparent_1px),linear-gradient(to_bottom,#ffffff05_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)]" />
+
+        {/* Угловые HUD-маркеры промысловой телеметрии */}
+        <div className="hidden xl:block absolute top-24 left-8 font-mono text-[9px] text-white/20 uppercase tracking-widest space-y-1">
+          <div>LOC // 61.2333° N, 71.9333° E</div>
+          <div className="flex items-center gap-1.5 text-[#34D399]/40">
+            <Radio size={10} className="animate-ping" /> SECTOR // KHMAO-OILFIELD-01
+          </div>
+        </div>
+
+        <div className="hidden xl:block absolute top-24 right-8 font-mono text-[9px] text-white/20 uppercase tracking-widest text-right space-y-1">
+          <div>SYS // ECO_TELEMETRY_V2.6</div>
+          <div className="flex items-center justify-end gap-1.5 text-[#FFAA00]/40">
+            <Cpu size={10} /> PROMETHEUS PROTOCOL ACTIVE
+          </div>
+        </div>
       </div>
 
       {/* ШАПКА */}
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#050810]/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#04060c]/85 backdrop-blur-2xl">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
           <div onClick={() => navigate('/')} className="flex items-center gap-3 cursor-pointer">
             <span className="font-mono text-sm font-bold text-[#FFAA00]">(💧)</span>
@@ -125,7 +141,7 @@ export default function AppShell() {
                 setNotifOpen(!notifOpen);
                 if (!notifOpen && unreadNotifCount > 0) markNotificationsRead();
               }}
-              className="relative p-2 border border-white/10 bg-white/[0.02] hover:border-white/30 text-[#8A93A6] hover:text-white"
+              className="relative p-2 border border-white/10 bg-white/[0.02] hover:border-white/30 text-[#8A93A6] hover:text-white transition-colors"
             >
               <Bell size={16} />
               {unreadNotifCount > 0 && (
@@ -137,7 +153,7 @@ export default function AppShell() {
 
             {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ */}
             {notifOpen && (
-              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#0a0f1c]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3">
+              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#080d1a]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <span className="font-mono text-[10px] uppercase tracking-widest text-[#FFAA00]">
                     Уведомления ({visibleNotifs.length})
@@ -215,13 +231,13 @@ export default function AppShell() {
         </div>
       </header>
 
-      {/* ОСНОВНОЙ КОНТЕНТ (С ПОВЫШЕННЫМ Z-INDEX) */}
+      {/* ОСНОВНОЙ КОНТЕНТ */}
       <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-8 relative z-10">
         <Outlet />
       </main>
 
       {/* FOOTER */}
-      <footer className="border-t border-white/10 bg-[#03050a]/90 backdrop-blur-md py-8 px-4 sm:px-8 mt-12 relative z-10 print:hidden">
+      <footer className="border-t border-white/10 bg-[#020307]/90 backdrop-blur-md py-8 px-4 sm:px-8 mt-12 relative z-10 print:hidden">
         <div className="max-w-[1440px] mx-auto grid grid-cols-1 md:grid-cols-4 gap-6 text-xs text-[#8A93A6]">
           <div className="space-y-2">
             <div className="font-mono text-sm font-bold text-white">
