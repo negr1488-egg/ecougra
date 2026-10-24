@@ -1,25 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase, checkRateLimit, uploadFileToStorage } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { Card, Button, Input, Avatar, Badge, Modal, useToast } from '../components/ui/DesignSystem';
-import { Send, Paperclip, UserPlus, Plus, LogOut } from 'lucide-react';
+import { Send, Paperclip, Plus, LogOut, MessageCircle, Hash, Search } from 'lucide-react';
 
 export default function ChatPage() {
   const { user, profile, setUnreadChatCount } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
-  const [activeChatId, setActiveChatId] = useState('aaaa1111-1111-1111-1111-111111111111');
+  const [activeChatId, setActiveChatId] = useState(
+    searchParams.get('room') || 'aaaa1111-1111-1111-1111-111111111111'
+  );
   const [text, setText] = useState('');
+  const [userSearch, setUserSearch] = useState('');
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUser, setTypingUser] = useState(null);
-  const [inviteUsername, setInviteUsername] = useState('');
   const [newChatModal, setNewChatModal] = useState(false);
   const [newChatTitle, setNewChatTitle] = useState('');
   const [newChatType, setNewChatType] = useState('project');
+
   const bottomRef = useRef(null);
   const presenceChannelRef = useRef(null);
 
@@ -27,9 +31,14 @@ export default function ChatPage() {
     setUnreadChatCount(0);
   }, [setUnreadChatCount]);
 
-  // Загружаем список доступных чатов
+  useEffect(() => {
+    const roomParam = searchParams.get('room');
+    if (roomParam) setActiveChatId(roomParam);
+  }, [searchParams]);
+
+  // Загружаем список каналов и личных диалогов
   const { data: chats = [] } = useQuery({
-    queryKey: ['chats_list', user?.id],
+    queryKey: ['chats_list_v2', user?.id],
     queryFn: async () => {
       const { data } = await supabase.from('chats').select('*').order('created_at');
       return data?.length
@@ -38,6 +47,18 @@ export default function ChatPage() {
             { id: 'aaaa1111-1111-1111-1111-111111111111', type: 'general', title: '#общий — Экосистема ЮГРА.НЕФТЬ' },
             { id: 'bbbb2222-2222-2222-2222-222222222222', type: 'support', title: '#поддержка — Вопросы по платформе' }
           ];
+    }
+  });
+
+  // Загружаем список участников для быстрого старта личного чата (DM)
+  const { data: allProfiles = [] } = useQuery({
+    queryKey: ['chat_directory_users'],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, username, full_name, avatar_url, status')
+        .order('username');
+      return data || [];
     }
   });
 
@@ -55,11 +76,28 @@ export default function ChatPage() {
     }
   });
 
-  // Realtime: новые сообщения + Supabase Presence (онлайн и статус «печатает»)
+  // Запуск личного диалога в 1 клик
+  const startDirectMessageWithUser = async (targetProfile) => {
+    if (!targetProfile?.id || targetProfile.id === user?.id) return;
+    try {
+      const { data: dmChatId, error } = await supabase.rpc('get_or_create_direct_chat', {
+        target_user_id: targetProfile.id
+      });
+
+      if (error) throw error;
+
+      await queryClient.invalidateQueries({ queryKey: ['chats_list_v2'] });
+      setActiveChatId(dmChatId);
+      toast(`Открыт личный диалог с ${targetProfile.username}`, 'success');
+    } catch (err) {
+      toast(err.message || 'Не удалось открыть диалог. Выполните SQL-скрипт в Supabase.', 'error');
+    }
+  };
+
+  // Realtime + Presence
   useEffect(() => {
     if (!activeChatId || !user) return;
 
-    // Обновляем last_read_at
     supabase
       .from('chat_members')
       .upsert([{ chat_id: activeChatId, user_id: user.id, last_read_at: new Date().toISOString() }])
@@ -118,7 +156,7 @@ export default function ChatPage() {
     e.preventDefault();
     if (!text.trim()) return;
     try {
-      checkRateLimit('chat_send', 1000);
+      checkRateLimit('chat_send', 800);
       const msgText = text.trim();
       setText('');
       const { error } = await supabase.from('chat_messages').insert([{
@@ -137,7 +175,7 @@ export default function ChatPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      toast('Загрузка вложения в Supabase Storage...', 'info');
+      toast('Загрузка файла...', 'info');
       const url = await uploadFileToStorage('chat-attachments', user.id, file);
       await supabase.from('chat_messages').insert([{
         chat_id: activeChatId,
@@ -152,97 +190,149 @@ export default function ChatPage() {
     }
   };
 
-  const handleInviteByUsername = async (e) => {
-    e.preventDefault();
-    if (!inviteUsername.trim()) return;
-    const formatted = inviteUsername.startsWith('@') ? inviteUsername.trim() : `@${inviteUsername.trim()}`;
-    const { data: target } = await supabase.from('profiles').select('id, username').eq('username', formatted).maybeSingle();
-    if (!target) return toast(`Пользователь ${formatted} не найден`, 'error');
-
-    await supabase.from('chat_members').upsert([{ chat_id: activeChatId, user_id: target.id, role: 'member' }]);
-    setInviteUsername('');
-    toast(`Участник ${target.username} добавлен в чат!`, 'success');
-  };
-
-  const handleCreateChat = async (e) => {
+  const handleCreateChannel = async (e) => {
     e.preventDefault();
     if (!newChatTitle.trim()) return;
-    const { data, error } = await supabase
-      .from('chats')
-      .insert([{ type: newChatType, title: newChatTitle, owner_id: user.id, org_id: profile?.org_id }])
-      .select()
-      .single();
-    if (error) return toast(error.message, 'error');
+    try {
+      const { data, error } = await supabase
+        .from('chats')
+        .insert([{ type: newChatType, title: newChatTitle.trim(), owner_id: user.id, org_id: profile?.org_id || null }])
+        .select()
+        .single();
+      if (error) throw error;
 
-    await supabase.from('chat_members').insert([{ chat_id: data.id, user_id: user.id, role: 'owner' }]);
-    queryClient.invalidateQueries({ queryKey: ['chats_list'] });
-    setActiveChatId(data.id);
-    setNewChatModal(false);
-    setNewChatTitle('');
-    toast('Новый канал создан!', 'success');
+      await supabase.from('chat_members').upsert([{ chat_id: data.id, user_id: user.id, role: 'owner' }]);
+      await queryClient.invalidateQueries({ queryKey: ['chats_list_v2'] });
+      setActiveChatId(data.id);
+      setNewChatModal(false);
+      setNewChatTitle('');
+      toast('Групповой канал создан!', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   };
 
   const handleLeaveChat = async () => {
     await supabase.from('chat_members').delete().eq('chat_id', activeChatId).eq('user_id', user.id);
     setActiveChatId('aaaa1111-1111-1111-1111-111111111111');
-    toast('Вы покинули чат', 'info');
+    toast('Вы покинули канал', 'info');
   };
 
   const currentChat = chats.find((c) => c.id === activeChatId) || chats[0];
+  const groupChannels = chats.filter((c) => c.type !== 'direct');
+  const directChats = chats.filter((c) => c.type === 'direct');
+  const otherUsers = allProfiles.filter(
+    (p) =>
+      p.id !== user?.id &&
+      (p.username?.toLowerCase().includes(userSearch.toLowerCase()) ||
+        p.full_name?.toLowerCase().includes(userSearch.toLowerCase()))
+  );
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-      {/* СПИСОК КАНАЛОВ И PRESENCE ОНЛАЙН */}
+      {/* ЛЕВАЯ КОЛОНКА: КАНАЛЫ + ЛИЧНЫЕ СООБЩЕНИЯ В 1 КЛИК */}
       <Card className="lg:col-span-4 flex flex-col justify-between space-y-6">
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-xs uppercase tracking-widest text-[#FFAA00]">Каналы и Диалоги</span>
-            <Button size="sm" variant="outline" onClick={() => setNewChatModal(true)}>
-              <Plus size={13} /> Создать
-            </Button>
-          </div>
-
-          <div className="space-y-1.5 max-h-72 overflow-y-auto">
-            {chats.map((ch) => (
+        <div className="space-y-5">
+          {/* 1. Групповые каналы */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[11px] uppercase tracking-widest text-[#FFAA00] flex items-center gap-1.5">
+                <Hash size={13} /> Каналы экосистемы
+              </span>
               <button
-                key={ch.id}
-                onClick={() => setActiveChatId(ch.id)}
-                className={`w-full text-left p-3 border transition-all flex items-center justify-between ${
-                  activeChatId === ch.id
-                    ? 'border-[#00C853] bg-[#00C853]/10 text-white'
-                    : 'border-white/5 bg-[#050810] text-[#8A93A6] hover:text-white'
-                }`}
+                onClick={() => setNewChatModal(true)}
+                className="font-mono text-[10px] uppercase text-[#34D399] hover:underline flex items-center gap-1"
               >
-                <span className="font-mono text-xs truncate">{ch.title}</span>
-                <Badge color="gold">{ch.type}</Badge>
+                <Plus size={12} /> Канал
               </button>
-            ))}
+            </div>
+
+            <div className="space-y-1 max-h-44 overflow-y-auto pr-1">
+              {groupChannels.map((ch) => (
+                <button
+                  key={ch.id}
+                  onClick={() => setActiveChatId(ch.id)}
+                  className={`w-full text-left p-2.5 border transition-all flex items-center justify-between ${
+                    activeChatId === ch.id
+                      ? 'border-[#00C853] bg-[#00C853]/10 text-white'
+                      : 'border-white/5 bg-[#050810] text-[#8A93A6] hover:text-white'
+                  }`}
+                >
+                  <span className="font-mono text-xs truncate">{ch.title}</span>
+                  <Badge color="emerald">{ch.type}</Badge>
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Приглашение в текущий чат по @username */}
-          <form onSubmit={handleInviteByUsername} className="pt-4 border-t border-white/10 space-y-2">
-            <label className="block font-mono text-[10px] uppercase text-[#8A93A6]">
-              Пригласить участника по @username
-            </label>
-            <div className="flex gap-2">
+          {/* 2. Активные личные переписки (Direct) */}
+          {directChats.length > 0 && (
+            <div className="space-y-2 pt-3 border-t border-white/10">
+              <span className="font-mono text-[11px] uppercase tracking-widest text-[#22D3EE] flex items-center gap-1.5">
+                <MessageCircle size={13} /> Личные диалоги
+              </span>
+              <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                {directChats.map((ch) => (
+                  <button
+                    key={ch.id}
+                    onClick={() => setActiveChatId(ch.id)}
+                    className={`w-full text-left p-2.5 border transition-all flex items-center justify-between ${
+                      activeChatId === ch.id
+                        ? 'border-[#22D3EE] bg-[#22D3EE]/10 text-white'
+                        : 'border-white/5 bg-[#050810] text-zinc-300 hover:text-white'
+                    }`}
+                  >
+                    <span className="font-mono text-xs truncate">{ch.title}</span>
+                    <Badge color="cyan">ЛС</Badge>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3. Написать любому пользователю лично в 1 клик */}
+          <div className="space-y-2.5 pt-3 border-t border-white/10">
+            <div className="font-mono text-[11px] uppercase tracking-widest text-[#34D399]">
+              Написать участнику лично:
+            </div>
+            <div className="relative">
+              <Search size={13} className="absolute left-3 top-2.5 text-[#8A93A6]" />
               <input
                 type="text"
-                value={inviteUsername}
-                onChange={(e) => setInviteUsername(e.target.value)}
-                placeholder="@username..."
-                className="flex-1 bg-[#050810] border border-white/10 px-3 py-1.5 text-xs font-mono text-[#FFAA00]"
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Поиск по @username или имени..."
+                className="w-full bg-[#050810] border border-white/10 pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
               />
-              <Button type="submit" size="sm" variant="outline">
-                <UserPlus size={14} />
-              </Button>
             </div>
-          </form>
+
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {otherUsers.map((u) => (
+                <div
+                  key={u.id}
+                  onClick={() => startDirectMessageWithUser(u)}
+                  className="p-2 border border-white/5 bg-[#050810] hover:border-[#00C853]/50 flex items-center justify-between cursor-pointer transition-all group"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar src={u.avatar_url} username={u.username} status={u.status} size="sm" />
+                    <div className="truncate">
+                      <div className="font-mono text-xs text-[#FFAA00] truncate">{u.username}</div>
+                      <div className="text-[11px] text-[#8A93A6] truncate">{u.full_name}</div>
+                    </div>
+                  </div>
+                  <span className="px-2 py-1 bg-[#00C853]/10 border border-[#00C853]/30 font-mono text-[9px] uppercase text-[#34D399] group-hover:bg-[#00C853] group-hover:text-[#050810] transition-colors shrink-0">
+                    Написать →
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* Онлайн в комнате через Supabase Presence */}
-        <div className="pt-4 border-t border-white/10">
-          <div className="font-mono text-[10px] uppercase text-[#34D399] mb-2">
-            ● Сейчас в канале ({onlineUsers.length}):
+        {/* Онлайн в текущей комнате */}
+        <div className="pt-3 border-t border-white/10">
+          <div className="font-mono text-[10px] uppercase text-[#34D399] mb-1.5">
+            ● В этом чате онлайн ({onlineUsers.length}):
           </div>
           <div className="flex flex-wrap gap-1.5">
             {onlineUsers.map((uname) => (
@@ -254,68 +344,74 @@ export default function ChatPage() {
         </div>
       </Card>
 
-      {/* ОКНО СООБЩЕНИЙ */}
-      <Card className="lg:col-span-8 flex flex-col justify-between h-[580px]">
+      {/* ПРАВАЯ КОЛОНКА: ОКНО ПЕРЕПИСКИ */}
+      <Card className="lg:col-span-8 flex flex-col justify-between h-[620px]">
         <div className="flex items-center justify-between border-b border-white/10 pb-3">
           <div>
             <h2 className="text-base font-medium text-white">{currentChat?.title}</h2>
             <div className="font-mono text-[10px] text-[#34D399]">
-              {typingUser ? `✍ ${typingUser} печатает...` : 'Supabase Realtime + Presence активен'}
+              {typingUser ? `✍ ${typingUser} печатает сообщение...` : 'Защищённый канал Supabase Realtime'}
             </div>
           </div>
-          {currentChat?.type !== 'general' && (
+          {currentChat?.type !== 'general' && currentChat?.type !== 'support' && (
             <Button size="sm" variant="danger" onClick={handleLeaveChat}>
-              <LogOut size={13} /> Выйти
+              <LogOut size={13} /> Покинуть
             </Button>
           )}
         </div>
 
         <div className="flex-1 overflow-y-auto py-4 space-y-3 pr-2">
-          {messages.map((m) => {
-            const isMine = m.author_id === user?.id;
-            const authorUname = m.profiles?.username || '@user';
-            return (
-              <div key={m.id} className={`flex items-start gap-3 ${isMine ? 'flex-row-reverse' : ''}`}>
-                <Avatar
-                  src={m.profiles?.avatar_url}
-                  username={authorUname}
-                  status={m.profiles?.status}
-                  size="sm"
-                  onClick={() => navigate(`/profile/${authorUname.replace('@', '')}`)}
-                />
-                <div
-                  className={`p-3.5 border max-w-lg ${
-                    isMine ? 'border-[#00C853]/40 bg-[#00C853]/10' : 'border-white/10 bg-[#050810]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1 font-mono text-[10px]">
-                    <button
-                      onClick={() => navigate(`/profile/${authorUname.replace('@', '')}`)}
-                      className="text-[#FFAA00] font-bold hover:underline"
-                    >
-                      {authorUname}
-                    </button>
-                    <span className="text-[#4A5464]">
-                      {new Date(m.created_at).toLocaleTimeString().slice(0, 5)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-zinc-100 leading-relaxed whitespace-pre-wrap">{m.content}</p>
-                  {Array.isArray(m.attachments) &&
-                    m.attachments.map((att, idx) => (
-                      <a
-                        key={idx}
-                        href={att.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-2 inline-block px-2.5 py-1 bg-white/5 border border-[#22D3EE]/40 font-mono text-[10px] text-[#22D3EE] hover:underline"
+          {messages.length === 0 ? (
+            <div className="h-full flex items-center justify-center font-mono text-xs text-[#8A93A6]">
+              Сообщений пока нет. Начните диалог первым!
+            </div>
+          ) : (
+            messages.map((m) => {
+              const isMine = m.author_id === user?.id;
+              const authorUname = m.profiles?.username || '@user';
+              return (
+                <div key={m.id} className={`flex items-start gap-3 ${isMine ? 'flex-row-reverse' : ''}`}>
+                  <Avatar
+                    src={m.profiles?.avatar_url}
+                    username={authorUname}
+                    status={m.profiles?.status}
+                    size="sm"
+                    onClick={() => navigate(`/profile/${authorUname.replace('@', '')}`)}
+                  />
+                  <div
+                    className={`p-3.5 border max-w-lg ${
+                      isMine ? 'border-[#00C853]/40 bg-[#00C853]/10' : 'border-white/10 bg-[#050810]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1 font-mono text-[10px]">
+                      <button
+                        onClick={() => navigate(`/profile/${authorUname.replace('@', '')}`)}
+                        className="text-[#FFAA00] font-bold hover:underline"
                       >
-                        📎 Скачать: {att.name}
-                      </a>
-                    ))}
+                        {authorUname}
+                      </button>
+                      <span className="text-[#4A5464]">
+                        {new Date(m.created_at).toLocaleTimeString().slice(0, 5)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-100 leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                    {Array.isArray(m.attachments) &&
+                      m.attachments.map((att, idx) => (
+                        <a
+                          key={idx}
+                          href={att.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-block px-2.5 py-1 bg-white/5 border border-[#22D3EE]/40 font-mono text-[10px] text-[#22D3EE] hover:underline"
+                        >
+                          📎 {att.name}
+                        </a>
+                      ))}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
           <div ref={bottomRef} />
         </div>
 
@@ -328,7 +424,7 @@ export default function ChatPage() {
             type="text"
             value={text}
             onChange={(e) => handleTyping(e.target.value)}
-            placeholder="Напишите сообщение или упомяните @username..."
+            placeholder="Введите сообщение..."
             className="flex-1 bg-[#050810] border border-white/10 px-4 py-2.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
           />
           <Button type="submit" size="md">
@@ -337,28 +433,28 @@ export default function ChatPage() {
         </form>
       </Card>
 
-      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать новый канал чата">
-        <form onSubmit={handleCreateChat} className="space-y-4">
+      {/* Модальное окно создания группового канала */}
+      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать групповой канал">
+        <form onSubmit={handleCreateChannel} className="space-y-4">
           <Input
-            label="Название чата"
+            label="Название канала"
             value={newChatTitle}
             onChange={(e) => setNewChatTitle(e.target.value)}
-            placeholder="#проект-биоремедиация"
+            placeholder="#команда-рекультивации"
             required
           />
           <div>
-            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">Тип канала</label>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">Назначение канала</label>
             <select
               value={newChatType}
               onChange={(e) => setNewChatType(e.target.value)}
               className="w-full bg-[#050810] border border-white/10 px-3 py-2 text-xs text-white"
             >
-              <option value="project">Проектный чат (#project)</option>
-              <option value="org">Чат организации (#org)</option>
-              <option value="direct">Личный диалог (direct)</option>
+              <option value="project">Проектная группа (#project)</option>
+              <option value="org">Канал организации (#org)</option>
             </select>
           </div>
-          <Button type="submit" className="w-full">Создать чат</Button>
+          <Button type="submit" className="w-full">Создать канал</Button>
         </form>
       </Modal>
     </div>
