@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import HmaoEcoMap from '../components/Map/HmaoEcoMap';
 import { Card, Button, Input, Badge, Modal, Skeleton, useToast } from '../components/ui/DesignSystem';
-import { EyeOff, Calendar, Video, Award, CheckCircle2, FastForward } from 'lucide-react';
+import { EyeOff, Calendar, Video, FastForward } from 'lucide-react';
 
 const PITCH_SIM_STEPS = [
   {
@@ -50,15 +50,14 @@ const PITCH_SIM_STEPS = [
 ];
 
 export default function ActivitiesPage() {
-  const { user, profile, hasRole } = useAuth();
+  const { user, hasRole } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [tab, setTab] = useState('projects'); // projects | pitch_sim | map
+  const [tab, setTab] = useState('projects');
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedProj, setSelectedProj] = useState(null);
 
-  // Форма проекта с режимом слепой защиты и расписанием
   const [projForm, setProjForm] = useState({
     title: '',
     description: '',
@@ -69,17 +68,14 @@ export default function ActivitiesPage() {
     call_link: ''
   });
 
-  // Оценка жюри с весами (Научность 30%, Актуальность 25%, Реализуемость 25%, Защита 20%)
   const [scores, setScores] = useState({ science: 9, relevance: 9, feasibility: 8, pitch: 9, comment: '' });
-
-  // Состояние 4-шагового тренажёра защиты
   const [simStep, setSimStep] = useState(0);
   const [simFeedback, setSimFeedback] = useState(null);
 
   const isJuryOrAdmin = hasRole(['jury', 'admin', 'dev']);
 
   const { data: projects = [], isLoading } = useQuery({
-    queryKey: ['projects_defense_v3'],
+    queryKey: ['projects_defense_v4'],
     queryFn: async () => {
       const { data: projs } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
       const { data: revs } = await supabase.from('project_reviews').select('*');
@@ -116,19 +112,23 @@ export default function ActivitiesPage() {
   const createProjectMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
-      const { error } = await supabase.from('projects').insert([
-        {
-          title: projForm.title.trim(),
-          description: projForm.description.trim(),
-          impact_metric: projForm.impact_metric,
-          status: projForm.status,
-          blind_mode: projForm.blind_mode,
-          pitch_at: projForm.pitch_at || null,
-          call_link: projForm.call_link.trim(),
-          author_id: user.id
-        }
-      ]);
+      if (!user?.id) throw new Error('Пожалуйста, авторизуйтесь заново');
+
+      const payload = {
+        title: projForm.title.trim(),
+        description: projForm.description.trim(),
+        impact_metric: projForm.impact_metric,
+        status: projForm.status,
+        author_id: user.id
+      };
+
+      if (projForm.blind_mode !== undefined) payload.blind_mode = projForm.blind_mode;
+      if (projForm.pitch_at) payload.pitch_at = projForm.pitch_at;
+      if (projForm.call_link) payload.call_link = projForm.call_link.trim();
+
+      const { error } = await supabase.from('projects').insert([payload]);
       if (error) throw error;
+
       await supabase.rpc('award_xp_secure', {
         p_action: 'project_created',
         p_entity: 'project',
@@ -137,9 +137,18 @@ export default function ActivitiesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects_defense_v3'] });
+      queryClient.invalidateQueries({ queryKey: ['projects_defense_v4'] });
       setCreateOpen(false);
-      toast('Проект отправлен в комиссию! (+75 XP)', 'success');
+      setProjForm({
+        title: '',
+        description: '',
+        impact_metric: '-30% CO₂',
+        status: 'submitted',
+        blind_mode: false,
+        pitch_at: '',
+        call_link: ''
+      });
+      toast('Проект успешно подан на защиту! (+75 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -154,8 +163,6 @@ export default function ActivitiesPage() {
           score_relevance: Number(scores.relevance),
           score_feasibility: Number(scores.feasibility),
           score_pitch: Number(scores.pitch),
-          score_impact: 9,
-          score_novelty: 9,
           comment: scores.comment,
           decision: 'approved'
         }
@@ -163,18 +170,9 @@ export default function ActivitiesPage() {
       if (error) throw error;
 
       await supabase.from('projects').update({ status: 'defended' }).eq('id', proj.id);
-      if (proj.author_id) {
-        await supabase.from('notifications').insert([
-          {
-            user_id: proj.author_id,
-            type: 'jury_review',
-            payload: { preview: `Эксперт жюри оценил ваш проект «${proj.title}»!` }
-          }
-        ]);
-      }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects_defense_v3'] });
+      queryClient.invalidateQueries({ queryKey: ['projects_defense_v4'] });
       setSelectedProj(null);
       toast('Экспертная оценка сохранена!', 'success');
     },
@@ -225,7 +223,7 @@ export default function ActivitiesPage() {
         <div className="space-y-6">
           <div className="flex justify-between items-center">
             <p className="text-xs text-[#8A93A6]">
-              Этапы: <span className="font-mono text-white">draft → submitted → scheduled → defended → approved / revision</span>
+              Этапы: <span className="font-mono text-white">draft → submitted → scheduled → defended → approved</span>
             </p>
             <Button variant="gold" size="sm" onClick={() => setCreateOpen(true)}>
               + Подать проект на защиту
@@ -287,7 +285,6 @@ export default function ActivitiesPage() {
         </div>
       )}
 
-      {/* УПРОЩЁННЫЙ 4-ШАГОВЫЙ СИМУЛЯТОР ЗАЩИТЫ ПРОЕКТА */}
       {tab === 'pitch_sim' && (
         <Card className="p-8 max-w-2xl mx-auto space-y-6">
           <div className="flex items-center justify-between">
@@ -391,7 +388,7 @@ export default function ActivitiesPage() {
         </form>
       </Modal>
 
-      {/* Модалка оценки жюри с весами */}
+      {/* Модалка оценки жюри */}
       <Modal isOpen={Boolean(selectedProj)} onClose={() => setSelectedProj(null)} title={`Оценка жюри: ${selectedProj?.title}`}>
         <div className="space-y-4 text-xs">
           {[

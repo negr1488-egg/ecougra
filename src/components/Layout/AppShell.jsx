@@ -63,9 +63,21 @@ export default function AppShell() {
   }
 
   return (
-    <div className="min-h-screen bg-[#050810] text-zinc-100 flex flex-col justify-between">
+    <div className="min-h-screen bg-[#04060c] text-zinc-100 flex flex-col justify-between relative overflow-x-hidden selection:bg-[#00C853]/30 selection:text-white">
+      {/* ДЕКОРАТИВНЫЕ СЛОИ ГЛУБИНЫ И СВЕЧЕНИЯ ЗАДНЕГО ФОНА */}
+      <div className="fixed inset-0 pointer-events-none z-0">
+        {/* Изумрудное мягкое свечение в левом верхнем углу */}
+        <div className="absolute -top-40 -left-40 w-[600px] h-[600px] bg-[#00C853]/10 rounded-full blur-[140px]" />
+        {/* Янтарное свечение в правом нижнем углу */}
+        <div className="absolute top-1/3 -right-40 w-[550px] h-[550px] bg-[#FFAA00]/08 rounded-full blur-[160px]" />
+        {/* Холодный глубокий циан по центру */}
+        <div className="absolute -bottom-20 left-1/3 w-[500px] h-[500px] bg-[#0077b6]/08 rounded-full blur-[150px]" />
+        {/* Инженерная микросетка */}
+        <div className="absolute inset-0 bg-[radial-gradient(#ffffff0a_1px,transparent_1px)] [background-size:24px_24px] opacity-60" />
+      </div>
+
       {/* ШАПКА */}
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#050810]/95 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#050810]/80 backdrop-blur-xl">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
           <div onClick={() => navigate('/')} className="flex items-center gap-3 cursor-pointer">
             <span className="font-mono text-sm font-bold text-[#FFAA00]">(💧)</span>
@@ -87,7 +99,7 @@ export default function AppShell() {
                   end={item.to === '/'}
                   className={({ isActive }) =>
                     `px-3.5 py-2 font-mono text-[11px] uppercase tracking-wider flex items-center gap-2 border-b-2 transition-all ${
-                      isActive ? 'border-[#00C853] text-white bg-white/[0.03]' : 'border-transparent text-[#8A93A6] hover:text-white'
+                      isActive ? 'border-[#00C853] text-white bg-white/[0.04]' : 'border-transparent text-[#8A93A6] hover:text-white'
                     }`
                   }
                 >
@@ -103,7 +115,6 @@ export default function AppShell() {
             })}
           </nav>
 
-          {/* ПРАВАЯ ЧАСТЬ ШАПКИ */}
           <div className="flex items-center gap-3 relative">
             <Badge color="gold">
               <Flame size={12} /> {profile?.streak_days || 1} дн.
@@ -124,9 +135,9 @@ export default function AppShell() {
               )}
             </button>
 
-            {/* ИСПРАВЛЕННЫЙ ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ (НЕ ВЫЛЕЗАЕТ ЗА ЭКРАН) */}
+            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ */}
             {notifOpen && (
-              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#0a0f1c] border border-white/20 shadow-2xl p-4 z-50 space-y-3">
+              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#0a0f1c]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <span className="font-mono text-[10px] uppercase tracking-widest text-[#FFAA00]">
                     Уведомления ({visibleNotifs.length})
@@ -170,7 +181,7 @@ export default function AppShell() {
                     visibleNotifs.map((n) => (
                       <div
                         key={n.id}
-                        className="p-2.5 border border-white/5 bg-[#050810] text-xs flex items-start justify-between gap-2"
+                        className="p-2.5 border border-white/10 bg-[#050810]/70 text-xs flex items-start justify-between gap-2"
                       >
                         <div className="min-w-0">
                           <div className="font-mono text-[10px] text-[#34D399] uppercase">{n.type}</div>
@@ -204,13 +215,13 @@ export default function AppShell() {
         </div>
       </header>
 
-      {/* ОСНОВНОЙ КОНТЕНТ */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-8">
+      {/* ОСНОВНОЙ КОНТЕНТ (С ПОВЫШЕННЫМ Z-INDEX) */}
+      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-8 relative z-10">
         <Outlet />
       </main>
 
       {/* FOOTER */}
-      <footer className="border-t border-white/10 bg-[#04060c] py-8 px-4 sm:px-8 mt-12 print:hidden">
+      <footer className="border-t border-white/10 bg-[#03050a]/90 backdrop-blur-md py-8 px-4 sm:px-8 mt-12 relative z-10 print:hidden">
         <div className="max-w-[1440px] mx-auto grid grid-cols-1 md:grid-cols-4 gap-6 text-xs text-[#8A93A6]">
           <div className="space-y-2">
             <div className="font-mono text-sm font-bold text-white">
@@ -245,7 +256,7 @@ export default function AppShell() {
       </footer>
 
       {!cookieAccepted && (
-        <div className="fixed bottom-4 right-4 left-4 sm:left-auto sm:max-w-md bg-[#0a0f1c] border border-[#00C853]/50 p-4 shadow-2xl z-50 flex items-center justify-between gap-4">
+        <div className="fixed bottom-4 right-4 left-4 sm:left-auto sm:max-w-md bg-[#0a0f1c]/95 border border-[#00C853]/50 p-4 shadow-2xl z-50 flex items-center justify-between gap-4 backdrop-blur-lg">
           <div className="flex items-center gap-3 text-xs text-zinc-200">
             <Cookie size={22} className="text-[#FFAA00] shrink-0" />
             <span>Мы используем файлы Cookie для сохранения сессии платформы.</span>
