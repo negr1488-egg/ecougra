@@ -6,12 +6,12 @@ export default function LogoIcon({ className = "w-10 h-10" }) {
       className={`${className} shrink-0`}
       width="40" 
       height="40" 
-      viewBox="0 0 100 100" 
+      viewBox="0 0 110 100" 
       fill="none" 
       xmlns="http://www.w3.org/2000/svg"
     >
       <defs>
-        <linearGradient id="dropGrad" x1="50" y1="5" x2="50" y2="95" gradientUnits="userSpaceOnUse">
+        <linearGradient id="dropGrad" x1="55" y1="5" x2="55" y2="95" gradientUnits="userSpaceOnUse">
           <stop stopColor="#34D399" />
           <stop offset="1" stopColor="#00C853" />
         </linearGradient>
@@ -21,17 +21,19 @@ export default function LogoIcon({ className = "w-10 h-10" }) {
         </filter>
       </defs>
 
-      {/* Фигурные скобки IT ({ }) по бокам */}
+      {/* Левая фигурная скобка ({) смещена влево, чтобы не пересекаться с каплей */}
       <path 
-        d="M26 32 C20 32 17 35 17 40 C17 44 14 47 10 49 C14 51 17 54 17 58 C17 63 20 66 26 66" 
+        d="M22 32 C16 32 13 35 13 40 C13 44 10 47 6 49 C10 51 13 54 13 58 C13 63 16 66 22 66" 
         stroke="#FFAA00" 
         strokeWidth="5" 
         strokeLinecap="round" 
         strokeLinejoin="round"
         filter="url(#glow)"
       />
+      
+      {/* Правая фигурная скобка (}) смещена вправо */}
       <path 
-        d="M74 32 C80 32 83 35 83 40 C83 44 86 47 90 49 C86 51 83 54 83 58 C83 63 80 66 74 66" 
+        d="M88 32 C94 32 97 35 97 40 C97 44 100 47 104 49 C100 51 97 54 97 58 C97 63 94 66 88 66" 
         stroke="#FFAA00" 
         strokeWidth="5" 
         strokeLinecap="round" 
@@ -39,25 +41,25 @@ export default function LogoIcon({ className = "w-10 h-10" }) {
         filter="url(#glow)"
       />
 
-      {/* Основная капля */}
+      {/* Основная капля по центру */}
       <path 
-        d="M50 8 C50 8 20 42 20 62 C20 78 33 91 50 91 C67 91 80 78 80 62 C80 42 50 8 50 8Z" 
+        d="M55 8 C55 8 27 42 27 62 C27 78 39 91 55 91 C71 91 83 78 83 62 C83 42 55 8 55 8Z" 
         fill="url(#dropGrad)" 
         fillOpacity="0.15"
         stroke="url(#dropGrad)" 
         strokeWidth="4"
       />
 
-      {/* Ёлка внутри */}
+      {/* Аккуратная ёлка внутри капли с отступами */}
       <path 
-        d="M50 32 L36 48 H43 L33 60 H41 L34 69 H66 L59 60 H67 L57 48 H64 L50 32 Z" 
+        d="M55 33 L42 48 H48 L40 59 H47 L41 68 H69 L63 59 H70 L62 48 H68 L55 33 Z" 
         fill="#34D399" 
         fillOpacity="0.25"
         stroke="#34D399" 
         strokeWidth="3.5" 
         strokeLinejoin="round"
       />
-      <rect x="47" y="69" width="6" height="8" rx="1" fill="#34D399" />
+      <rect x="52" y="68" width="6" height="8" rx="1" fill="#34D399" />
     </svg>
   );
 }
