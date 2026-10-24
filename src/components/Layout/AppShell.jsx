@@ -104,8 +104,8 @@ export default function AppShell() {
               <Menu size={18} />
             </button>
 
-            <div onClick={() => navigate('/')} className="flex items-center gap-2.5 cursor-pointer">
-              <LogoIcon className="w-9 h-9 shrink-0" />
+            <div onClick={() => navigate('/')} className="flex items-center gap-3 cursor-pointer">
+              <LogoIcon className="w-10 h-10" />
               <div>
                 <div className="text-xs font-bold tracking-widest uppercase text-white">
                   ЮГРА.<span className="text-[#FFAA00]">НЕФТЬ</span>
@@ -254,7 +254,7 @@ export default function AppShell() {
             <div className="space-y-6">
               <div className="flex items-center justify-between border-b border-white/10 pb-4">
                 <div className="flex items-center gap-2 font-mono text-xs text-white">
-                  <LogoIcon className="w-6 h-6" /> МЕНЮ НАВИГАЦИИ
+                  <LogoIcon className="w-7 h-7" /> МЕНЮ НАВИГАЦИИ
                 </div>
                 <button onClick={() => setMobileDrawerOpen(false)} className="text-[#8A93A6] hover:text-white p-1">
                   <X size={18} />
