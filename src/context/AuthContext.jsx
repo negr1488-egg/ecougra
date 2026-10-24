@@ -6,7 +6,7 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
-  const [roles, setRoles] = useState([]); // ['student', 'jury', 'admin', ...]
+  const [roles, setRoles] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -21,29 +21,50 @@ export function AuthProvider({ children }) {
     }
 
     try {
-      // 1. Загружаем профиль с организацией
-      let { data: prof } = await supabase
+      // 1. Извлекаем профиль вместе с организацией
+      let { data: prof, error: profError } = await supabase
         .from('profiles')
         .select('*, organizations(id, name, type, city)')
         .eq('id', authUser.id)
-        .single();
+        .maybeSingle();
 
-      // Если профиль ещё не создан триггером — создаём
-      if (!prof) {
-        const fallbackUsername = authUser.user_metadata?.username || `@user_${authUser.id.slice(0, 6)}`;
-        const { data: inserted } = await supabase
+      // Если записи нет (или триггер не сработал), создаём запись на клиенте
+      if (!prof || profError) {
+        const rawUsername =
+          authUser.user_metadata?.username ||
+          `@user_${authUser.id.replace(/-/g, '').slice(0, 6)}`;
+        const formattedUsername = rawUsername.startsWith('@')
+          ? rawUsername
+          : `@${rawUsername}`;
+        const rawFullName =
+          authUser.user_metadata?.full_name ||
+          authUser.email?.split('@')[0] ||
+          'Исследователь';
+
+        const { data: createdProf } = await supabase
           .from('profiles')
-          .insert([{
-            id: authUser.id,
-            username: fallbackUsername.startsWith('@') ? fallbackUsername : `@${fallbackUsername}`,
-            full_name: authUser.user_metadata?.full_name || authUser.email.split('@')[0]
-          }])
+          .upsert([
+            {
+              id: authUser.id,
+              username: formattedUsername,
+              full_name: rawFullName,
+              xp: 100,
+              streak_days: 1
+            }
+          ])
           .select('*, organizations(id, name, type, city)')
-          .single();
-        prof = inserted;
+          .maybeSingle();
+
+        prof = createdProf || {
+          id: authUser.id,
+          username: formattedUsername,
+          full_name: rawFullName,
+          xp: 100,
+          streak_days: 1
+        };
       }
 
-      // 2. Проверка ежедневного Streak (огонёк входов)
+      // 2. Расчёт ежедневной серии входов (Streak)
       if (prof) {
         const today = new Date().toISOString().slice(0, 10);
         if (prof.last_active_date !== today) {
@@ -58,14 +79,15 @@ export function AuthProvider({ children }) {
             })
             .eq('id', authUser.id)
             .select('*, organizations(id, name, type, city)')
-            .single();
+            .maybeSingle();
+
           if (updatedProf) prof = updatedProf;
         }
       }
 
       setProfile(prof);
 
-      // 3. Загружаем роли многие-ко-многим
+      // 3. Загружаем назначенные роли пользователя
       const { data: roleRows } = await supabase
         .from('user_roles')
         .select('roles(name)')
@@ -74,17 +96,19 @@ export function AuthProvider({ children }) {
       const roleList = (roleRows || []).map((r) => r.roles?.name).filter(Boolean);
       setRoles(roleList.length ? roleList : ['student']);
 
-      // 4. Загружаем уведомления
+      // 4. Загружаем список уведомлений
       const { data: notifs } = await supabase
         .from('notifications')
         .select('*')
         .eq('user_id', authUser.id)
         .order('created_at', { ascending: false })
         .limit(20);
-      setNotifications(notifs || []);
-      setUnreadChatCount((notifs || []).filter((n) => n.type === 'new_message' && !n.read_at).length);
+
+      const loadedNotifs = notifs || [];
+      setNotifications(loadedNotifs);
+      setUnreadChatCount(loadedNotifs.filter((n) => n.type === 'new_message' && !n.read_at).length);
     } catch (e) {
-      console.error('Auth load error:', e);
+      console.error('Ошибка инициализации профиля:', e);
     } finally {
       setLoading(false);
     }
@@ -104,7 +128,7 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe();
   }, [fetchUserProfileAndRoles]);
 
-  // Realtime подписка на уведомления
+  // Realtime-подписка на новые уведомления
   useEffect(() => {
     if (!session?.user?.id) return;
     const channel = supabase
@@ -132,6 +156,7 @@ export function AuthProvider({ children }) {
       .update({ read_at: now })
       .eq('user_id', session.user.id)
       .is('read_at', null);
+
     setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at || now })));
     setUnreadChatCount(0);
   };
