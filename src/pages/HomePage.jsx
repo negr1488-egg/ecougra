@@ -14,7 +14,8 @@ import {
   Compass,
   Trophy,
   ExternalLink,
-  Link as LinkIcon
+  MessageSquare,
+  Trash2
 } from 'lucide-react';
 
 const FALLBACK_NEWS = [
@@ -53,6 +54,11 @@ export default function HomePage() {
   const [postText, setPostText] = useState('');
   const [postLink, setPostLink] = useState('');
   const [selectedArticle, setSelectedArticle] = useState(null);
+
+  // Состояния для комментариев в ленте
+  const [openCommentsPostId, setOpenCommentsPostId] = useState(null);
+  const [commentInput, setCommentInput] = useState('');
+
   const [likedPostIds, setLikedPostIds] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('ugra_liked_wall_posts') || '[]');
@@ -63,7 +69,7 @@ export default function HomePage() {
 
   // 1. Загрузка выпусков газеты
   const { data: newsArticles = FALLBACK_NEWS, isLoading: newsLoading } = useQuery({
-    queryKey: ['home_newspaper_v10'],
+    queryKey: ['home_newspaper_v11'],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -80,24 +86,19 @@ export default function HomePage() {
     }
   });
 
-  // 2. ЗАГРУЗКА ИЗ ТАБЛИЦЫ wall_posts ДЛЯ ОБЩЕЙ ЛЕНТЫ
+  // 2. ЗАГРУЗКА wall_posts ВМЕСТЕ С КОММЕНТАРИЯМИ (wall_comments)
   const { data: posts = [], isLoading: postsLoading } = useQuery({
-    queryKey: ['home_wall_posts_feed_v10'],
+    queryKey: ['home_wall_posts_feed_v11'],
     queryFn: async () => {
       try {
-        // Запрашиваем публичные посты из wall_posts
-        const { data: rawPosts, error: pErr } = await supabase
-          .from('wall_posts')
-          .select('*')
-          .limit(30);
-
-        if (pErr || !rawPosts) return [];
-
-        // Запрашиваем профили и роли авторов
-        const [profsRes, urRes] = await Promise.all([
+        const [postsRes, commentsRes, profsRes, urRes] = await Promise.all([
+          supabase.from('wall_posts').select('*').limit(30),
+          supabase.from('wall_comments').select('*').order('created_at', { ascending: true }),
           supabase.from('profiles').select('id, username, full_name, avatar_url, status'),
           supabase.from('user_roles').select('user_id, role_id')
         ]);
+
+        if (postsRes.error || !postsRes.data) return [];
 
         const profMap = Object.fromEntries((profsRes.data || []).map((p) => [p.id, p]));
         const roleMap = {};
@@ -106,8 +107,19 @@ export default function HomePage() {
           roleMap[ur.user_id].push(ROLE_ID_MAP[ur.role_id] || 'student');
         });
 
-        // Сортируем: свежие сверху
-        const sorted = rawPosts.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        // Группируем комментарии по постам
+        const commentsByPost = {};
+        (commentsRes.data || []).forEach((c) => {
+          if (!commentsByPost[c.post_id]) commentsByPost[c.post_id] = [];
+          commentsByPost[c.post_id].push({
+            ...c,
+            author: profMap[c.author_id] || { username: '@участник' }
+          });
+        });
+
+        const sorted = postsRes.data.sort(
+          (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+        );
 
         return sorted.map((p) => {
           const author = profMap[p.author_id] || { username: '@исследователь', full_name: 'Участник платформы' };
@@ -115,11 +127,12 @@ export default function HomePage() {
           return {
             ...p,
             author,
-            highestRole
+            highestRole,
+            comments: commentsByPost[p.id] || []
           };
         });
       } catch (err) {
-        console.error('Ошибка загрузки ленты wall_posts:', err);
+        console.error('Ошибка загрузки ленты:', err);
         return [];
       }
     }
@@ -152,8 +165,8 @@ export default function HomePage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13'] });
       setPostText('');
       setPostLink('');
       toast('Запись опубликована в ленте сообщества! (+20 XP)', 'success');
@@ -161,6 +174,44 @@ export default function HomePage() {
     onError: (err) => toast(err.message, 'error')
   });
 
+  // 4. Добавление комментария к посту на главной
+  const addCommentMutation = useMutation({
+    mutationFn: async ({ postId, text }) => {
+      if (!text.trim() || !user?.id) return;
+      if (profile?.is_banned) throw new Error('Ваш аккаунт заблокирован');
+
+      const { error } = await supabase.from('wall_comments').insert([
+        {
+          post_id: postId,
+          author_id: user.id,
+          content: text.trim()
+        }
+      ]);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13'] });
+      setCommentInput('');
+      toast('Комментарий добавлен', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // 5. Удаление комментария
+  const deleteCommentMutation = useMutation({
+    mutationFn: async (commentId) => {
+      const { error } = await supabase.from('wall_comments').delete().eq('id', commentId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13'] });
+      toast('Комментарий удалён', 'info');
+    }
+  });
+
+  // 6. Лайки к постам
   const handleToggleLike = async (post) => {
     const alreadyLiked = likedPostIds.includes(post.id);
     const nextLikes = alreadyLiked ? Math.max(0, (post.likes_count || 0) - 1) : (post.likes_count || 0) + 1;
@@ -172,7 +223,7 @@ export default function HomePage() {
     localStorage.setItem('ugra_liked_wall_posts', JSON.stringify(updatedIds));
 
     await supabase.from('wall_posts').update({ likes_count: nextLikes }).eq('id', post.id);
-    queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
+    queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
   };
 
   const leadArticle = newsArticles[0] || FALLBACK_NEWS[0];
@@ -275,7 +326,7 @@ export default function HomePage() {
         </Card>
       </section>
 
-      {/* 3. ЛЕНТА СООБЩЕСТВА ИЗ СИСТЕМНОЙ ТАБЛИЦЫ wall_posts */}
+      {/* 3. ЛЕНТА СООБЩЕСТВА С КОММЕНТАРИЯМИ */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -325,6 +376,8 @@ export default function HomePage() {
               const uname = p.author?.username || '@исследователь';
               const isLiked = likedPostIds.includes(p.id);
               const roleBadge = p.highestRole || { label: 'Исследователь', color: 'emerald' };
+              const comments = p.comments || [];
+              const isCommentsOpen = openCommentsPostId === p.id;
 
               return (
                 <Card key={p.id} className="p-5 flex flex-col justify-between space-y-4 bg-[#060a14]/90 border-white/10">
@@ -366,20 +419,91 @@ export default function HomePage() {
                     )}
                   </div>
 
+                  {/* Панель лайков и кнопки комментариев */}
                   <div className="pt-3 border-t border-white/10 flex items-center justify-between">
-                    <button
-                      onClick={() => handleToggleLike(p)}
-                      className={`px-3 py-1 rounded border font-mono text-xs flex items-center gap-1.5 transition-all ${
-                        isLiked
-                          ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399]'
-                          : 'border-white/10 text-[#8A93A6] hover:text-white'
-                      }`}
-                    >
-                      <Heart size={13} className={isLiked ? 'fill-[#34D399]' : ''} />
-                      <span>{p.likes_count || 0}</span>
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => handleToggleLike(p)}
+                        className={`px-3 py-1 rounded border font-mono text-xs flex items-center gap-1.5 transition-all ${
+                          isLiked
+                            ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399]'
+                            : 'border-white/10 text-[#8A93A6] hover:text-white'
+                        }`}
+                      >
+                        <Heart size={13} className={isLiked ? 'fill-[#34D399]' : ''} />
+                        <span>{p.likes_count || 0}</span>
+                      </button>
+
+                      <button
+                        onClick={() => setOpenCommentsPostId(isCommentsOpen ? null : p.id)}
+                        className="flex items-center gap-1.5 text-xs font-mono text-zinc-300 hover:text-white transition-colors"
+                      >
+                        <MessageSquare size={13} /> {comments.length}
+                      </button>
+                    </div>
+
                     <span className="font-mono text-[10px] text-[#8A93A6]">Стена Югры</span>
                   </div>
+
+                  {/* ВЕТКА РАСКРЫВАЮЩИХСЯ КОММЕНТАРИЕВ (wall_comments) */}
+                  {isCommentsOpen && (
+                    <div className="pt-3 border-t border-white/10 space-y-3">
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {comments.length === 0 ? (
+                          <div className="text-[11px] text-[#8A93A6] font-mono py-1">
+                            Комментариев пока нет. Будьте первым!
+                          </div>
+                        ) : (
+                          comments.map((c) => (
+                            <div
+                              key={c.id}
+                              className="p-2.5 rounded bg-[#050810] border border-white/5 flex items-start justify-between gap-2"
+                            >
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-xs text-[#FFAA00] font-bold">
+                                    {c.author?.username}
+                                  </span>
+                                  <span className="text-[10px] text-[#8A93A6]">
+                                    {new Date(c.created_at).toLocaleTimeString().slice(0, 5)}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-zinc-200 mt-1">{c.content}</p>
+                              </div>
+                              {c.author_id === user?.id && (
+                                <button
+                                  onClick={() => deleteCommentMutation.mutate(c.id)}
+                                  className="text-[#8A93A6] hover:text-red-400 p-1"
+                                  title="Удалить"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          addCommentMutation.mutate({ postId: p.id, text: commentInput });
+                        }}
+                        className="flex gap-2"
+                      >
+                        <input
+                          type="text"
+                          value={commentInput}
+                          onChange={(e) => setCommentInput(e.target.value)}
+                          placeholder="Ваш комментарий..."
+                          className="flex-1 bg-[#050810] border border-white/15 rounded px-3 py-1.5 text-xs text-white outline-none focus:border-[#00C853]"
+                        />
+                        <Button type="submit" size="sm">
+                          <Send size={12} />
+                        </Button>
+                      </form>
+                    </div>
+                  )}
                 </Card>
               );
             })}

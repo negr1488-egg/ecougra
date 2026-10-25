@@ -52,6 +52,10 @@ export default function ProfilePage() {
   const [wallContent, setWallContent] = useState('');
   const [wallLink, setWallLink] = useState('');
 
+  // Состояние открытых комментариев для постов
+  const [openCommentsPostId, setOpenCommentsPostId] = useState(null);
+  const [commentInput, setCommentInput] = useState('');
+
   // Наставничество
   const [mentorInput, setMentorInput] = useState('');
   const [studentInput, setStudentInput] = useState('');
@@ -84,7 +88,7 @@ export default function ProfilePage() {
 
   // Загружаем профиль
   const { data: profileBundle, isLoading } = useQuery({
-    queryKey: ['profile_bundle_v12', username || myProfile?.id],
+    queryKey: ['profile_bundle_v13', username || myProfile?.id],
     enabled: Boolean(username || myProfile?.id),
     queryFn: async () => {
       let target = myProfile;
@@ -137,27 +141,43 @@ export default function ProfilePage() {
     profileBundle?.highestRole?.name === 'admin' ||
     profileBundle?.highestRole?.name === 'dev';
 
-  // 1. НАДЁЖНАЯ ЗАГРУЗКА ИЗ ТАБЛИЦЫ wall_posts С АВТОРСКОЙ ФИЛЬТРАЦИЕЙ
+  // 1. ЗАГРУЗКА wall_posts ВМЕСТЕ С КОММЕНТАРИЯМИ
   const { data: wallPosts = [], isLoading: wallLoading } = useQuery({
-    queryKey: ['profile_wall_posts_v12', targetProfile?.id],
+    queryKey: ['profile_wall_posts_v13', targetProfile?.id],
     enabled: Boolean(targetProfile?.id),
     queryFn: async () => {
       try {
-        const { data, error } = await supabase
-          .from('wall_posts')
-          .select('*')
-          .eq('author_id', targetProfile.id);
+        const [postsRes, commentsRes, profsRes] = await Promise.all([
+          supabase.from('wall_posts').select('*').eq('author_id', targetProfile.id),
+          supabase.from('wall_comments').select('*').order('created_at', { ascending: true }),
+          supabase.from('profiles').select('id, username, full_name, avatar_url')
+        ]);
 
-        if (error || !data) return [];
-        // Сортируем: свежие сверху
-        return data.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        const profMap = Object.fromEntries((profsRes.data || []).map((p) => [p.id, p]));
+        const commentsByPost = {};
+        (commentsRes.data || []).forEach((c) => {
+          if (!commentsByPost[c.post_id]) commentsByPost[c.post_id] = [];
+          commentsByPost[c.post_id].push({
+            ...c,
+            author: profMap[c.author_id] || { username: '@участник' }
+          });
+        });
+
+        const sorted = (postsRes.data || []).sort(
+          (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+        );
+
+        return sorted.map((p) => ({
+          ...p,
+          comments: commentsByPost[p.id] || []
+        }));
       } catch {
         return [];
       }
     }
   });
 
-  // 2. ПУБЛИКАЦИЯ В ТАБЛИЦУ wall_posts
+  // 2. ПУБЛИКАЦИЯ В wall_posts
   const createWallPostMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -184,7 +204,7 @@ export default function ProfilePage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v12', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
       queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
       setWallContent('');
       setWallLink('');
@@ -193,21 +213,56 @@ export default function ProfilePage() {
     onError: (err) => toast(err.message, 'error')
   });
 
-  // 3. УДАЛЕНИЕ ИЗ wall_posts
+  // 3. ДОБАВЛЕНИЕ КОММЕНТАРИЯ К ПОСТУ СТЕНЫ
+  const addCommentMutation = useMutation({
+    mutationFn: async ({ postId, text }) => {
+      if (!text.trim() || !user?.id) return;
+      if (myProfile?.is_banned) throw new Error('Ваш аккаунт заблокирован');
+
+      const { error } = await supabase.from('wall_comments').insert([
+        {
+          post_id: postId,
+          author_id: user.id,
+          content: text.trim()
+        }
+      ]);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
+      setCommentInput('');
+      toast('Комментарий добавлен', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // 4. УДАЛЕНИЕ КОММЕНТАРИЯ
+  const deleteCommentMutation = useMutation({
+    mutationFn: async (commentId) => {
+      const { error } = await supabase.from('wall_comments').delete().eq('id', commentId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
+      toast('Комментарий удалён', 'info');
+    }
+  });
+
+  // 5. УДАЛЕНИЕ ПОСТА
   const deleteWallPostMutation = useMutation({
     mutationFn: async (postId) => {
       const { error } = await supabase.from('wall_posts').delete().eq('id', postId);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v12', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
       queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
       toast('Запись удалена со стены', 'info');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // 4. УЧЕНИК ПРИВЯЗЫВАЕТ НАСТАВНИКА ПО @USERNAME
+  // Наставничество: привязка
   const studentBindMentorMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -222,7 +277,7 @@ export default function ProfilePage() {
         .maybeSingle();
 
       if (!foundMentor) throw new Error(`Пользователь ${clean} не найден`);
-      if (foundMentor.id === user.id) throw new Error('Нельзя назначить себя своим же наставником');
+      if (foundMentor.id === user.id) throw new Error('Нельзя назначить себя');
 
       const { data: rolesData } = await supabase
         .from('user_roles')
@@ -243,15 +298,14 @@ export default function ProfilePage() {
       return foundMentor;
     },
     onSuccess: (mentor) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
       if (refreshProfile) refreshProfile();
       setMentorInput('');
-      toast(`Наставник ${mentor.username} (${mentor.full_name}) привязан!`, 'success');
+      toast(`Наставник ${mentor.username} привязан!`, 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // 5. НАСТАВНИК САМ ПРИВЯЗЫВАЕТ УЧЕНИКА ПО @USERNAME
   const mentorBindStudentMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -265,8 +319,7 @@ export default function ProfilePage() {
         .ilike('username', clean)
         .maybeSingle();
 
-      if (!foundStudent) throw new Error(`Ученик с никнеймом ${clean} не найден`);
-      if (foundStudent.id === user.id) throw new Error('Нельзя привязать самого себя');
+      if (!foundStudent) throw new Error(`Ученик ${clean} не найден`);
 
       const { error } = await supabase
         .from('profiles')
@@ -277,9 +330,9 @@ export default function ProfilePage() {
       return foundStudent;
     },
     onSuccess: (student) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
       setStudentInput('');
-      toast(`Ученик ${student.username} (${student.full_name}) привязан к вам!`, 'success');
+      toast(`Ученик ${student.username} привязан к вам!`, 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -290,7 +343,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
       toast('Ученик отвязан', 'info');
     }
   });
@@ -301,13 +354,13 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
       if (refreshProfile) refreshProfile();
       toast('Наставник отвязан', 'info');
     }
   });
 
-  // 6. СОХРАНЕНИЕ ПОЛНОЙ АНКЕТЫ
+  // Сохранение анкеты
   const updateProfileMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -328,10 +381,10 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
       if (refreshProfile) refreshProfile();
       setEditOpen(false);
-      toast('Данные анкеты исследователя сохранены!', 'success');
+      toast('Анкета сохранена!', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -343,7 +396,7 @@ export default function ProfilePage() {
       toast('Загрузка аватара...', 'info');
       const publicUrl = await uploadFileToStorage('avatars', user.id, file);
       await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
       if (refreshProfile) refreshProfile();
       toast('Аватар обновлён!', 'success');
     } catch (err) {
@@ -360,7 +413,7 @@ export default function ProfilePage() {
 
   return (
     <div className="space-y-8">
-      {/* 1. ГЛАВНАЯ КАРТОЧКА ПРОФИЛЯ */}
+      {/* 1. ШАПКА ПРОФИЛЯ */}
       <Card className="p-6 sm:p-8 border-[#00C853]/30 bg-gradient-to-r from-[#060a14] via-[#071914] to-[#050810] shadow-2xl relative overflow-hidden">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative z-10">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
@@ -394,7 +447,7 @@ export default function ProfilePage() {
               </div>
 
               <h1 className="text-2xl sm:text-3xl font-semibold text-white">{targetProfile.full_name}</h1>
-              
+
               <div className="flex flex-wrap items-center gap-4 text-xs text-[#8A93A6] pt-0.5">
                 <span className="flex items-center gap-1.5 text-zinc-300">
                   <MapPin size={13} className="text-[#00C853]" />
@@ -491,8 +544,9 @@ export default function ProfilePage() {
         </div>
       </Card>
 
-      {/* 2. СЕТКА: ЛЕВАЯ КОЛОНКА (НАСТАВНИК И ДОСЬЕ) И ПРАВАЯ (СТЕНА wall_posts И ПРОЕКТЫ) */}
+      {/* 2. СЕТКА КОНТЕНТА */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* ЛЕВАЯ КОЛОНКА */}
         <div className="lg:col-span-4 space-y-6">
           <Card className="p-5 space-y-3.5 border-white/10 bg-[#060a14]">
             <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00] flex items-center gap-2">
@@ -520,7 +574,7 @@ export default function ProfilePage() {
             </div>
           </Card>
 
-          {/* НАСТАВНИК ДЛЯ УЧЕНИКА */}
+          {/* БЛОК НАСТАВНИКА ДЛЯ УЧЕНИКА */}
           <Card className="p-5 space-y-4 border-[#22D3EE]/30 bg-[#060a14]">
             <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
               <UserCheck size={15} /> Научный наставник
@@ -613,9 +667,7 @@ export default function ProfilePage() {
 
               <div className="space-y-2 pt-2 border-t border-white/10">
                 {menteesList.length === 0 ? (
-                  <div className="text-xs text-[#8A93A6] font-mono py-2">
-                    Пока нет привязанных учеников.
-                  </div>
+                  <div className="text-xs text-[#8A93A6] font-mono py-2">Пока нет привязанных учеников.</div>
                 ) : (
                   <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                     {menteesList.map((st) => (
@@ -661,7 +713,7 @@ export default function ProfilePage() {
           </Card>
         </div>
 
-        {/* ПРАВАЯ КОЛОНКА: СТЕНА (wall_posts) + ПРОЕКТЫ + АКТИВНОСТЬ */}
+        {/* ПРАВАЯ КОЛОНКА: СТЕНА + КОММЕНТАРИИ + ПРОЕКТЫ */}
         <div className="lg:col-span-8 space-y-5">
           <div className="flex items-center gap-2 border-b border-white/10 pb-3">
             <button
@@ -698,7 +750,7 @@ export default function ProfilePage() {
             </button>
           </div>
 
-          {/* ВКЛАДКА: СТЕНА ПРОФИЛЯ (ИЗ ТАБЛИЦЫ wall_posts) */}
+          {/* ВКЛАДКА: СТЕНА ПРОФИЛЯ + КОММЕНТАРИИ */}
           {activeTab === 'wall' && (
             <div className="space-y-4">
               {isOwnProfile && (
@@ -736,60 +788,133 @@ export default function ProfilePage() {
                   На стене пока нет записей. {isOwnProfile ? 'Напишите первый пост выше!' : ''}
                 </Card>
               ) : (
-                wallPosts.map((post) => (
-                  <Card key={post.id} className="p-5 space-y-3 bg-[#060a14]/90 border-white/10">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <Avatar
-                          src={targetProfile.avatar_url}
-                          username={targetProfile.username}
-                          status={targetProfile.status}
-                          size="sm"
-                        />
-                        <div>
-                          <div className="font-mono text-xs text-[#FFAA00] font-bold">
-                            {targetProfile.username}
-                          </div>
-                          <div className="text-[10px] text-[#8A93A6]">
-                            {new Date(post.created_at || Date.now()).toLocaleString()}
+                wallPosts.map((post) => {
+                  const comments = post.comments || [];
+                  const isCommentsOpen = openCommentsPostId === post.id;
+
+                  return (
+                    <Card key={post.id} className="p-5 space-y-3 bg-[#060a14]/90 border-white/10">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <Avatar
+                            src={targetProfile.avatar_url}
+                            username={targetProfile.username}
+                            status={targetProfile.status}
+                            size="sm"
+                          />
+                          <div>
+                            <div className="font-mono text-xs text-[#FFAA00] font-bold">
+                              {targetProfile.username}
+                            </div>
+                            <div className="text-[10px] text-[#8A93A6]">
+                              {new Date(post.created_at || Date.now()).toLocaleString()}
+                            </div>
                           </div>
                         </div>
+
+                        {isOwnProfile && (
+                          <button
+                            onClick={() => deleteWallPostMutation.mutate(post.id)}
+                            className="p-1.5 rounded hover:bg-red-500/10 text-[#8A93A6] hover:text-red-400"
+                            title="Удалить запись со стены"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
 
-                      {isOwnProfile && (
-                        <button
-                          onClick={() => deleteWallPostMutation.mutate(post.id)}
-                          className="p-1.5 rounded hover:bg-red-500/10 text-[#8A93A6] hover:text-red-400"
-                          title="Удалить запись со стены"
+                      <p className="text-xs sm:text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed">
+                        {post.content}
+                      </p>
+
+                      {post.link_url && (
+                        <a
+                          href={post.link_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 p-2 bg-white/5 border border-white/10 rounded text-xs text-[#22D3EE] hover:underline"
                         >
-                          <Trash2 size={14} />
-                        </button>
+                          <ExternalLink size={12} /> {post.link_url}
+                        </a>
                       )}
-                    </div>
 
-                    <p className="text-xs sm:text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed">
-                      {post.content}
-                    </p>
+                      <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-[#8A93A6]">
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1.5 text-[#34D399]">
+                            <Heart size={13} className="fill-[#34D399]" /> {post.likes_count || 0}
+                          </span>
+                          <button
+                            onClick={() => setOpenCommentsPostId(isCommentsOpen ? null : post.id)}
+                            className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors"
+                          >
+                            <MessageSquare size={13} /> {comments.length} комментариев
+                          </button>
+                        </div>
+                        <span>Стена исследователя</span>
+                      </div>
 
-                    {post.link_url && (
-                      <a
-                        href={post.link_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 p-2 bg-white/5 border border-white/10 rounded text-xs text-[#22D3EE] hover:underline"
-                      >
-                        <ExternalLink size={12} /> {post.link_url}
-                      </a>
-                    )}
+                      {/* БЛОК РАСКРЫВАЮЩИХСЯ КОММЕНТАРИЕВ (wall_comments) */}
+                      {isCommentsOpen && (
+                        <div className="pt-3 border-t border-white/10 space-y-3">
+                          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                            {comments.length === 0 ? (
+                              <div className="text-[11px] text-[#8A93A6] font-mono py-1">
+                                Нет комментариев. Напишите первым!
+                              </div>
+                            ) : (
+                              comments.map((c) => (
+                                <div
+                                  key={c.id}
+                                  className="p-2.5 rounded bg-[#050810] border border-white/5 flex items-start justify-between gap-2"
+                                >
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono text-xs text-[#FFAA00] font-bold">
+                                        {c.author?.username}
+                                      </span>
+                                      <span className="text-[10px] text-[#8A93A6]">
+                                        {new Date(c.created_at).toLocaleTimeString().slice(0, 5)}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs text-zinc-200 mt-1">{c.content}</p>
+                                  </div>
+                                  {(c.author_id === user?.id || isOwnProfile) && (
+                                    <button
+                                      onClick={() => deleteCommentMutation.mutate(c.id)}
+                                      className="text-[#8A93A6] hover:text-red-400 p-1"
+                                      title="Удалить"
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  )}
+                                </div>
+                              ))
+                            )}
+                          </div>
 
-                    <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-[#8A93A6]">
-                      <span className="flex items-center gap-1.5 text-[#34D399]">
-                        <Heart size={13} className="fill-[#34D399]" /> {post.likes_count || 0}
-                      </span>
-                      <span>Стена исследователя</span>
-                    </div>
-                  </Card>
-                ))
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              addCommentMutation.mutate({ postId: post.id, text: commentInput });
+                            }}
+                            className="flex gap-2"
+                          >
+                            <input
+                              type="text"
+                              value={commentInput}
+                              onChange={(e) => setCommentInput(e.target.value)}
+                              placeholder="Написать комментарий..."
+                              className="flex-1 bg-[#050810] border border-white/15 rounded px-3 py-1.5 text-xs text-white outline-none focus:border-[#00C853]"
+                            />
+                            <Button type="submit" size="sm">
+                              <Send size={12} />
+                            </Button>
+                          </form>
+                        </div>
+                      )}
+                    </Card>
+                  );
+                })
               )}
             </div>
           )}
