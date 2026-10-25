@@ -22,8 +22,24 @@ import {
   MessageCircle,
   Clock,
   Sparkles,
-  Link as LinkIcon
+  Link as LinkIcon,
+  UserPlus,
+  UserMinus,
+  Settings,
+  Radio,
+  MapPin,
+  GraduationCap,
+  School,
+  ExternalLink,
+  Share2
 } from 'lucide-react';
+
+const STATUS_OPTIONS = [
+  { value: 'online', label: 'В сети', color: 'emerald' },
+  { value: 'away', label: 'Отошёл', color: 'gold' },
+  { value: 'busy', label: 'На промысле / Занят', color: 'red' },
+  { value: 'offline', label: 'Невидимка (Офлайн)', color: 'zinc' }
+];
 
 export default function ProfilePage() {
   const { username } = useParams();
@@ -32,23 +48,43 @@ export default function ProfilePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState('wall'); // 'wall' | 'projects' | 'activity'
-  const [wallPostText, setWallPostText] = useState('');
+  const [activeTab, setActiveTab] = useState('wall');
+  const [wallContent, setWallContent] = useState('');
+  const [wallLink, setWallLink] = useState('');
+
+  // Наставничество
   const [mentorInput, setMentorInput] = useState('');
+  const [studentInput, setStudentInput] = useState('');
+
+  // Модальные окна
   const [editOpen, setEditOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [certOpen, setCertOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState('');
 
-  const [form, setForm] = useState({
+  // Анкета исследователя
+  const [profileForm, setProfileForm] = useState({
     full_name: '',
     bio: '',
-    status: 'online'
+    status: 'online',
+    city: '',
+    school: '',
+    grade: '',
+    interests: '',
+    telegram: '',
+    vk: ''
   });
 
-  // Загружаем профиль целевого пользователя
+  const [privacySettings, setPrivacySettings] = useState({
+    show_online: true,
+    allow_direct_messages: 'all',
+    show_streak_xp: true
+  });
+
+  // Загружаем профиль
   const { data: profileBundle, isLoading } = useQuery({
-    queryKey: ['profile_bundle_v9', username || myProfile?.id],
+    queryKey: ['profile_bundle_v12', username || myProfile?.id],
     enabled: Boolean(username || myProfile?.id),
     queryFn: async () => {
       let target = myProfile;
@@ -69,9 +105,9 @@ export default function ProfilePage() {
         supabase.from('projects').select('*').eq('author_id', target.id).order('created_at', { ascending: false }),
         supabase.from('activity_log').select('*').eq('user_id', target.id).order('created_at', { ascending: false }).limit(20),
         target.mentor_id
-          ? supabase.from('profiles').select('id, username, full_name, avatar_url').eq('id', target.mentor_id).maybeSingle()
+          ? supabase.from('profiles').select('id, username, full_name, avatar_url, status').eq('id', target.mentor_id).maybeSingle()
           : Promise.resolve({ data: null }),
-        supabase.from('profiles').select('id, username, full_name, xp').eq('mentor_id', target.id)
+        supabase.from('profiles').select('id, username, full_name, xp, status, avatar_url').eq('mentor_id', target.id)
       ]);
 
       const allUr = urRes.data || [];
@@ -95,96 +131,99 @@ export default function ProfilePage() {
 
   const targetProfile = profileBundle?.target;
   const isOwnProfile = !username || targetProfile?.id === user?.id;
+  const isMentorRole =
+    profileBundle?.targetRoleNames?.includes('teacher') ||
+    profileBundle?.highestRole?.name === 'teacher' ||
+    profileBundle?.highestRole?.name === 'admin' ||
+    profileBundle?.highestRole?.name === 'dev';
 
-  // Загрузка постов стены (посты конкретного автора)
+  // 1. НАДЁЖНАЯ ЗАГРУЗКА ИЗ ТАБЛИЦЫ wall_posts С АВТОРСКОЙ ФИЛЬТРАЦИЕЙ
   const { data: wallPosts = [], isLoading: wallLoading } = useQuery({
-    queryKey: ['profile_wall_posts', targetProfile?.id],
+    queryKey: ['profile_wall_posts_v12', targetProfile?.id],
     enabled: Boolean(targetProfile?.id),
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('posts')
-        .select('*')
-        .eq('author_id', targetProfile.id)
-        .order('created_at', { ascending: false });
+      try {
+        const { data, error } = await supabase
+          .from('wall_posts')
+          .select('*')
+          .eq('author_id', targetProfile.id);
 
-      if (error || !data) return [];
-      return data;
+        if (error || !data) return [];
+        // Сортируем: свежие сверху
+        return data.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+      } catch {
+        return [];
+      }
     }
   });
 
-  // Публикация нового поста на стену
+  // 2. ПУБЛИКАЦИЯ В ТАБЛИЦУ wall_posts
   const createWallPostMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
-      if (!wallPostText.trim() || !user?.id) return;
+      if (!wallContent.trim() || !user?.id) return;
       if (myProfile?.is_banned) throw new Error('Ваш аккаунт ограничен модератором');
       checkRateLimit('wall_post_create', 1500);
 
-      const content = wallPostText.trim();
-      const { error } = await supabase.from('posts').insert([
-        {
-          author_id: user.id,
-          body: content,
-          content: content,
-          tags: ['Профиль', 'Стена']
-        }
-      ]);
+      const payload = {
+        author_id: user.id,
+        content: wallContent.trim(),
+        link_url: wallLink.trim() || null,
+        images: [],
+        visibility: 'public'
+      };
+
+      const { error } = await supabase.from('wall_posts').insert([payload]);
       if (error) throw error;
 
       await supabase.rpc('award_xp_secure', {
         p_action: 'wall_post_created',
-        p_entity: 'post',
+        p_entity: 'wall_post',
         p_xp_delta: 20,
         p_badge: 'Голос сообщества'
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_feed_posts_v9'] });
-      setWallPostText('');
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v12', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
+      setWallContent('');
+      setWallLink('');
       toast('Запись опубликована на стене! (+20 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Удаление поста со стены
+  // 3. УДАЛЕНИЕ ИЗ wall_posts
   const deleteWallPostMutation = useMutation({
     mutationFn: async (postId) => {
-      const { error } = await supabase.from('posts').delete().eq('id', postId);
+      const { error } = await supabase.from('wall_posts').delete().eq('id', postId);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_feed_posts_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v12', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
       toast('Запись удалена со стены', 'info');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Приватная привязка к наставнику по его личному @username
-  const bindMentorByUsernameMutation = useMutation({
+  // 4. УЧЕНИК ПРИВЯЗЫВАЕТ НАСТАВНИКА ПО @USERNAME
+  const studentBindMentorMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
       const raw = mentorInput.trim();
       if (!raw) throw new Error('Введите никнейм наставника');
       const clean = raw.startsWith('@') ? raw : `@${raw}`;
 
-      // 1. Ищем пользователя с таким никнеймом
-      const { data: foundMentor, error: findErr } = await supabase
+      const { data: foundMentor } = await supabase
         .from('profiles')
         .select('id, username, full_name')
         .ilike('username', clean)
         .maybeSingle();
 
-      if (findErr || !foundMentor) {
-        throw new Error(`Пользователь ${clean} не найден. Проверьте правильность логина.`);
-      }
+      if (!foundMentor) throw new Error(`Пользователь ${clean} не найден`);
+      if (foundMentor.id === user.id) throw new Error('Нельзя назначить себя своим же наставником');
 
-      if (foundMentor.id === user.id) {
-        throw new Error('Вы не можете назначить себя своим же наставником');
-      }
-
-      // 2. Проверяем, есть ли у него роль наставника (2) или админа/дева
       const { data: rolesData } = await supabase
         .from('user_roles')
         .select('role_id')
@@ -193,82 +232,106 @@ export default function ProfilePage() {
       const roleIds = (rolesData || []).map((r) => r.role_id);
       const isEligible = roleIds.includes(2) || roleIds.includes(4) || roleIds.includes(5);
 
-      if (!isEligible) {
-        throw new Error(`Пользователь ${clean} не зарегистрирован в системе как Наставник`);
-      }
+      if (!isEligible) throw new Error(`У пользователя ${clean} нет статуса Наставника`);
 
-      // 3. Привязываем
-      const { error: updErr } = await supabase
+      const { error } = await supabase
         .from('profiles')
         .update({ mentor_id: foundMentor.id })
         .eq('id', user.id);
 
-      if (updErr) throw updErr;
+      if (error) throw error;
       return foundMentor;
     },
     onSuccess: (mentor) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
       if (refreshProfile) refreshProfile();
       setMentorInput('');
-      toast(`Наставник ${mentor.username} (${mentor.full_name}) успешно привязан!`, 'success');
+      toast(`Наставник ${mentor.username} (${mentor.full_name}) привязан!`, 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Отвязка от наставника
-  const unbindMentorMutation = useMutation({
+  // 5. НАСТАВНИК САМ ПРИВЯЗЫВАЕТ УЧЕНИКА ПО @USERNAME
+  const mentorBindStudentMutation = useMutation({
+    mutationFn: async (e) => {
+      e.preventDefault();
+      const raw = studentInput.trim();
+      if (!raw) throw new Error('Введите никнейм ученика');
+      const clean = raw.startsWith('@') ? raw : `@${raw}`;
+
+      const { data: foundStudent } = await supabase
+        .from('profiles')
+        .select('id, username, full_name')
+        .ilike('username', clean)
+        .maybeSingle();
+
+      if (!foundStudent) throw new Error(`Ученик с никнеймом ${clean} не найден`);
+      if (foundStudent.id === user.id) throw new Error('Нельзя привязать самого себя');
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({ mentor_id: user.id })
+        .eq('id', foundStudent.id);
+
+      if (error) throw error;
+      return foundStudent;
+    },
+    onSuccess: (student) => {
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      setStudentInput('');
+      toast(`Ученик ${student.username} (${student.full_name}) привязан к вам!`, 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  const mentorUnbindStudentMutation = useMutation({
+    mutationFn: async (studentId) => {
+      const { error } = await supabase.from('profiles').update({ mentor_id: null }).eq('id', studentId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
+      toast('Ученик отвязан', 'info');
+    }
+  });
+
+  const studentUnbindMentorMutation = useMutation({
     mutationFn: async () => {
       const { error } = await supabase.from('profiles').update({ mentor_id: null }).eq('id', user.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
       if (refreshProfile) refreshProfile();
-      toast('Наставник отвязан от вашего профиля', 'info');
+      toast('Наставник отвязан', 'info');
     }
   });
 
-  // Редактирование профиля
+  // 6. СОХРАНЕНИЕ ПОЛНОЙ АНКЕТЫ
   const updateProfileMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
       const { error } = await supabase
         .from('profiles')
         .update({
-          full_name: form.full_name.trim(),
-          bio: form.bio.trim(),
-          status: form.status
+          full_name: profileForm.full_name.trim(),
+          bio: profileForm.bio.trim(),
+          status: profileForm.status,
+          city: profileForm.city.trim(),
+          school: profileForm.school.trim(),
+          grade: profileForm.grade.trim(),
+          interests: profileForm.interests.trim(),
+          telegram: profileForm.telegram.trim(),
+          vk: profileForm.vk.trim()
         })
         .eq('id', user.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
       if (refreshProfile) refreshProfile();
       setEditOpen(false);
-      toast('Профиль обновлён!', 'success');
-    },
-    onError: (err) => toast(err.message, 'error')
-  });
-
-  // Отправка жалобы
-  const reportUserMutation = useMutation({
-    mutationFn: async (e) => {
-      e.preventDefault();
-      const { error } = await supabase.from('reports').insert([
-        {
-          reporter_id: user.id,
-          target_id: targetProfile.id,
-          reason: `[Жалоба на профиль] ${reportReason.trim()}`,
-          status: 'pending'
-        }
-      ]);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      setReportOpen(false);
-      setReportReason('');
-      toast('Жалоба отправлена администраторам!', 'success');
+      toast('Данные анкеты исследователя сохранены!', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -280,7 +343,7 @@ export default function ProfilePage() {
       toast('Загрузка аватара...', 'info');
       const publicUrl = await uploadFileToStorage('avatars', user.id, file);
       await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v12'] });
       if (refreshProfile) refreshProfile();
       toast('Аватар обновлён!', 'success');
     } catch (err) {
@@ -290,15 +353,16 @@ export default function ProfilePage() {
 
   if (isLoading || !profileBundle) return <Skeleton className="h-96 w-full" />;
 
-  const { highestRole, targetRoleNames, mentorObj, menteesList, projects, activities } = profileBundle;
+  const { highestRole, mentorObj, menteesList, projects, activities } = profileBundle;
   const level = Math.floor((targetProfile.xp || 100) / 250) + 1;
   const badges = Array.isArray(targetProfile.badges) ? targetProfile.badges : ['Пионер Югры'];
+  const userStatus = STATUS_OPTIONS.find((s) => s.value === targetProfile.status) || STATUS_OPTIONS[0];
 
   return (
     <div className="space-y-8">
       {/* 1. ГЛАВНАЯ КАРТОЧКА ПРОФИЛЯ */}
-      <Card className="p-6 sm:p-8 border-[#00C853]/30 bg-gradient-to-r from-[#060a14] via-[#071914] to-[#050810] shadow-2xl">
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+      <Card className="p-6 sm:p-8 border-[#00C853]/30 bg-gradient-to-r from-[#060a14] via-[#071914] to-[#050810] shadow-2xl relative overflow-hidden">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative z-10">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
             <div className="relative group">
               <Avatar
@@ -319,6 +383,9 @@ export default function ProfilePage() {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-sm text-[#FFAA00] font-bold">{targetProfile.username}</span>
                 <Badge color={highestRole.color}>{highestRole.label}</Badge>
+                <Badge color={userStatus.color}>
+                  <Radio size={10} className="mr-1 animate-pulse" /> {userStatus.label}
+                </Badge>
                 <Badge color="emerald">Уровень {level}</Badge>
                 <Badge color="gold">
                   <Flame size={12} /> Серия {targetProfile.streak_days || 1} дн.
@@ -327,10 +394,47 @@ export default function ProfilePage() {
               </div>
 
               <h1 className="text-2xl sm:text-3xl font-semibold text-white">{targetProfile.full_name}</h1>
-              <p className="text-xs text-[#8A93A6]">
-                {targetProfile.organizations?.name || 'МБОУ «СОШ № 1» пгт. Пойковский (ХМАО-Югра)'}
-              </p>
-              {targetProfile.bio && <p className="text-xs text-zinc-200 max-w-xl pt-1">{targetProfile.bio}</p>}
+              
+              <div className="flex flex-wrap items-center gap-4 text-xs text-[#8A93A6] pt-0.5">
+                <span className="flex items-center gap-1.5 text-zinc-300">
+                  <MapPin size={13} className="text-[#00C853]" />
+                  {targetProfile.city || 'ХМАО-Югра, пгт. Пойковский'}
+                </span>
+                <span className="flex items-center gap-1.5 text-zinc-300">
+                  <School size={13} className="text-[#22D3EE]" />
+                  {targetProfile.school || targetProfile.organizations?.name || 'МБОУ «СОШ № 1»'}
+                  {targetProfile.grade ? ` • ${targetProfile.grade}` : ''}
+                </span>
+              </div>
+
+              {targetProfile.bio && (
+                <p className="text-xs text-zinc-200 max-w-xl pt-1.5 leading-relaxed">{targetProfile.bio}</p>
+              )}
+
+              {(targetProfile.telegram || targetProfile.vk) && (
+                <div className="flex items-center gap-3 pt-1 text-xs font-mono">
+                  {targetProfile.telegram && (
+                    <a
+                      href={`https://t.me/${targetProfile.telegram.replace('@', '')}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[#22D3EE] hover:underline flex items-center gap-1"
+                    >
+                      <Send size={11} /> {targetProfile.telegram}
+                    </a>
+                  )}
+                  {targetProfile.vk && (
+                    <a
+                      href={targetProfile.vk.startsWith('http') ? targetProfile.vk : `https://vk.com/${targetProfile.vk}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[#3b82f6] hover:underline flex items-center gap-1"
+                    >
+                      <Share2 size={11} /> VK
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -341,15 +445,24 @@ export default function ProfilePage() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setForm({
+                    setProfileForm({
                       full_name: targetProfile.full_name || '',
                       bio: targetProfile.bio || '',
-                      status: targetProfile.status || 'online'
+                      status: targetProfile.status || 'online',
+                      city: targetProfile.city || 'пгт. Пойковский',
+                      school: targetProfile.school || 'МБОУ «СОШ № 1»',
+                      grade: targetProfile.grade || '10 класс',
+                      interests: targetProfile.interests || 'Экология, нефтехимия, IT-моделирование',
+                      telegram: targetProfile.telegram || '',
+                      vk: targetProfile.vk || ''
                     });
                     setEditOpen(true);
                   }}
                 >
-                  <Edit3 size={14} /> Редактировать
+                  <Edit3 size={14} /> Редактировать анкету
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+                  <Settings size={14} /> Приватность
                 </Button>
                 <Button variant="gold" size="sm" onClick={() => setCertOpen(true)}>
                   <Printer size={14} /> Сертификат ХМАО
@@ -378,11 +491,36 @@ export default function ProfilePage() {
         </div>
       </Card>
 
-      {/* 2. СЕТКА: ЛЕВАЯ КОЛОНКА (НАСТАВНИК + ДОСТИЖЕНИЯ) И ПРАВАЯ (СТЕНА + ПРОЕКТЫ) */}
+      {/* 2. СЕТКА: ЛЕВАЯ КОЛОНКА (НАСТАВНИК И ДОСЬЕ) И ПРАВАЯ (СТЕНА wall_posts И ПРОЕКТЫ) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Левая колонка */}
         <div className="lg:col-span-4 space-y-6">
-          {/* Блок Наставника: ЗАКРЫТАЯ ПРИВЯЗКА ПО НИКНЕЙМУ */}
+          <Card className="p-5 space-y-3.5 border-white/10 bg-[#060a14]">
+            <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00] flex items-center gap-2">
+              <GraduationCap size={15} /> Досье участника платформы
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="p-2.5 bg-[#050810] border border-white/5 rounded">
+                <span className="text-[#8A93A6] block text-[10px] font-mono uppercase">Образование:</span>
+                <span className="text-white font-medium">{targetProfile.school || 'МБОУ «СОШ № 1» пгт. Пойковский'}</span>
+                {targetProfile.grade && <span className="text-[#34D399] ml-2 font-mono">({targetProfile.grade})</span>}
+              </div>
+
+              <div className="p-2.5 bg-[#050810] border border-white/5 rounded">
+                <span className="text-[#8A93A6] block text-[10px] font-mono uppercase">Муниципалитет / Город:</span>
+                <span className="text-white font-medium">{targetProfile.city || 'ХМАО-Югра, Нефтеюганский район'}</span>
+              </div>
+
+              {targetProfile.interests && (
+                <div className="p-2.5 bg-[#050810] border border-white/5 rounded">
+                  <span className="text-[#8A93A6] block text-[10px] font-mono uppercase">Научные интересы:</span>
+                  <span className="text-zinc-200">{targetProfile.interests}</span>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* НАСТАВНИК ДЛЯ УЧЕНИКА */}
           <Card className="p-5 space-y-4 border-[#22D3EE]/30 bg-[#060a14]">
             <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
               <UserCheck size={15} /> Научный наставник
@@ -391,7 +529,7 @@ export default function ProfilePage() {
             {mentorObj ? (
               <div className="p-3.5 rounded-lg border border-[#22D3EE]/30 bg-[#050810] space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-[#8A93A6]">Прикреплённый куратор:</span>
+                  <span className="text-[10px] font-mono text-[#8A93A6]">Прикреплённый наставник:</span>
                   <Badge color="cyan">Подтверждён</Badge>
                 </div>
                 <div
@@ -406,7 +544,7 @@ export default function ProfilePage() {
 
                 {isOwnProfile && (
                   <button
-                    onClick={() => unbindMentorMutation.mutate()}
+                    onClick={() => studentUnbindMentorMutation.mutate()}
                     className="text-[10px] font-mono text-red-400 hover:underline pt-1 block"
                   >
                     Сменить / отвязать наставника
@@ -416,11 +554,11 @@ export default function ProfilePage() {
             ) : (
               <div className="space-y-3">
                 <p className="text-xs text-[#8A93A6] leading-relaxed">
-                  Куратор проверяет ваши черновики и допускает к защите. Наставник передаёт вам свой юзернейм лично.
+                  Наставник курирует ваши проекты и допускает к защите. Введите логин наставника.
                 </p>
 
                 {isOwnProfile && (
-                  <form onSubmit={(e) => bindMentorByUsernameMutation.mutate(e)} className="space-y-2">
+                  <form onSubmit={(e) => studentBindMentorMutation.mutate(e)} className="space-y-2">
                     <Input
                       placeholder="@username_наставника"
                       value={mentorInput}
@@ -431,42 +569,84 @@ export default function ProfilePage() {
                       size="sm"
                       variant="primary"
                       className="w-full justify-center"
-                      disabled={bindMentorByUsernameMutation.isPending}
+                      disabled={studentBindMentorMutation.isPending}
                     >
-                      <LinkIcon size={13} /> Привязать куратора
+                      <LinkIcon size={13} /> Привязать наставника
                     </Button>
                   </form>
                 )}
               </div>
             )}
+          </Card>
 
-            {/* Если сам пользователь Наставник — показываем его подопечных */}
-            {targetRoleNames.includes('teacher') && (
-              <div className="pt-3 border-t border-white/10 space-y-2">
-                <div className="font-mono text-xs uppercase text-[#34D399]">
-                  Подопечные ученики ({menteesList.length}):
-                </div>
+          {/* ПРИВЯЗКА УЧЕНИКОВ САМИМ НАСТАВНИКОМ */}
+          {isMentorRole && (
+            <Card className="p-5 space-y-4 border-[#00C853]/30 bg-[#060a14]">
+              <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <UserPlus size={15} /> Ученики наставника ({menteesList.length})
+                </span>
+                <Badge color="emerald">Роль наставника</Badge>
+              </div>
+
+              {isOwnProfile && (
+                <form onSubmit={(e) => mentorBindStudentMutation.mutate(e)} className="space-y-2 pt-1">
+                  <div className="text-xs text-zinc-300">Привязать ученика по его юзернейму:</div>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="@username_ученика"
+                      value={studentInput}
+                      onChange={(e) => setStudentInput(e.target.value)}
+                    />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      variant="gold"
+                      className="shrink-0"
+                      disabled={mentorBindStudentMutation.isPending}
+                    >
+                      Привязать
+                    </Button>
+                  </div>
+                </form>
+              )}
+
+              <div className="space-y-2 pt-2 border-t border-white/10">
                 {menteesList.length === 0 ? (
-                  <div className="text-xs text-[#8A93A6]">Пока никто не привязался по вашему нику</div>
+                  <div className="text-xs text-[#8A93A6] font-mono py-2">
+                    Пока нет привязанных учеников.
+                  </div>
                 ) : (
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                     {menteesList.map((st) => (
                       <div
                         key={st.id}
-                        onClick={() => navigate(`/profile/${st.username.replace('@', '')}`)}
-                        className="p-2 rounded border border-white/5 bg-[#050810] flex items-center justify-between text-xs cursor-pointer hover:border-white/20"
+                        className="p-2.5 rounded border border-white/5 bg-[#050810] flex items-center justify-between text-xs"
                       >
-                        <span className="font-mono text-[#FFAA00]">{st.username}</span>
-                        <span className="text-zinc-300 truncate max-w-[120px]">{st.full_name}</span>
+                        <div
+                          onClick={() => navigate(`/profile/${st.username.replace('@', '')}`)}
+                          className="cursor-pointer"
+                        >
+                          <span className="font-mono text-[#FFAA00] block">{st.username}</span>
+                          <span className="text-zinc-300 text-[11px]">{st.full_name}</span>
+                        </div>
+                        {isOwnProfile && (
+                          <button
+                            onClick={() => mentorUnbindStudentMutation.mutate(st.id)}
+                            className="p-1 text-[#8A93A6] hover:text-red-400"
+                            title="Отвязать ученика"
+                          >
+                            <UserMinus size={13} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
               </div>
-            )}
-          </Card>
+            </Card>
+          )}
 
-          {/* Знаки отличия */}
           <Card className="p-5 space-y-3 border-white/10 bg-[#060a14]">
             <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00] flex items-center gap-2">
               <Award size={15} /> Знаки отличия ХМАО
@@ -481,9 +661,8 @@ export default function ProfilePage() {
           </Card>
         </div>
 
-        {/* Правая колонка: СТЕНА ПРОФИЛЯ + ПРОЕКТЫ + АКТИВНОСТЬ */}
+        {/* ПРАВАЯ КОЛОНКА: СТЕНА (wall_posts) + ПРОЕКТЫ + АКТИВНОСТЬ */}
         <div className="lg:col-span-8 space-y-5">
-          {/* Переключатель вкладок стены */}
           <div className="flex items-center gap-2 border-b border-white/10 pb-3">
             <button
               onClick={() => setActiveTab('wall')}
@@ -493,7 +672,7 @@ export default function ProfilePage() {
                   : 'border-white/10 text-[#8A93A6] hover:text-white'
               }`}
             >
-              <MessageCircle size={14} /> Стена ({wallPosts.length})
+              <MessageCircle size={14} /> Стена профиля ({wallPosts.length})
             </button>
 
             <button
@@ -519,33 +698,37 @@ export default function ProfilePage() {
             </button>
           </div>
 
-          {/* ВКЛАДКА: СТЕНА ПРОФИЛЯ */}
+          {/* ВКЛАДКА: СТЕНА ПРОФИЛЯ (ИЗ ТАБЛИЦЫ wall_posts) */}
           {activeTab === 'wall' && (
             <div className="space-y-4">
-              {/* Поле создания записи на стене (доступно на своей стене) */}
               {isOwnProfile && (
-                <Card className="p-4 bg-[#060a14] border-white/10">
+                <Card className="p-4 bg-[#060a14] border-white/10 space-y-3">
                   <form onSubmit={(e) => createWallPostMutation.mutate(e)} className="space-y-3">
                     <textarea
                       rows={3}
-                      value={wallPostText}
-                      onChange={(e) => setWallPostText(e.target.value)}
-                      placeholder="Опубликовать мысль, результат опыта или новость на своей стене..."
+                      value={wallContent}
+                      onChange={(e) => setWallContent(e.target.value)}
+                      placeholder="Опубликовать мысль, результат эксперимента или отчёт на своей стене..."
                       className="w-full bg-[#050810] border border-white/15 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-[#00C853]"
+                      required
                     />
-                    <div className="flex justify-between items-center">
-                      <span className="text-[10px] font-mono text-[#8A93A6] flex items-center gap-1">
-                        <Sparkles size={11} className="text-[#00C853]" /> Публикация на стене даёт +20 XP
-                      </span>
-                      <Button type="submit" size="sm" disabled={createWallPostMutation.isPending}>
-                        <Send size={13} /> Опубликовать
+
+                    <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between">
+                      <div className="flex-1">
+                        <Input
+                          placeholder="Прикрепить ссылку (https://...)"
+                          value={wallLink}
+                          onChange={(e) => setWallLink(e.target.value)}
+                        />
+                      </div>
+                      <Button type="submit" size="sm" disabled={createWallPostMutation.isPending} className="shrink-0">
+                        <Send size={13} /> Опубликовать (+20 XP)
                       </Button>
                     </div>
                   </form>
                 </Card>
               )}
 
-              {/* Лента постов на стене */}
               {wallLoading ? (
                 <Skeleton className="h-40 w-full" />
               ) : wallPosts.length === 0 ? (
@@ -553,52 +736,60 @@ export default function ProfilePage() {
                   На стене пока нет записей. {isOwnProfile ? 'Напишите первый пост выше!' : ''}
                 </Card>
               ) : (
-                wallPosts.map((post) => {
-                  const postContent = post.content || post.body || '';
-                  return (
-                    <Card key={post.id} className="p-5 space-y-3 bg-[#060a14]/90 border-white/10">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                          <Avatar
-                            src={targetProfile.avatar_url}
-                            username={targetProfile.username}
-                            status={targetProfile.status}
-                            size="sm"
-                          />
-                          <div>
-                            <div className="font-mono text-xs text-[#FFAA00] font-bold">
-                              {targetProfile.username}
-                            </div>
-                            <div className="text-[10px] text-[#8A93A6]">
-                              {new Date(post.created_at).toLocaleString()}
-                            </div>
+                wallPosts.map((post) => (
+                  <Card key={post.id} className="p-5 space-y-3 bg-[#060a14]/90 border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <Avatar
+                          src={targetProfile.avatar_url}
+                          username={targetProfile.username}
+                          status={targetProfile.status}
+                          size="sm"
+                        />
+                        <div>
+                          <div className="font-mono text-xs text-[#FFAA00] font-bold">
+                            {targetProfile.username}
+                          </div>
+                          <div className="text-[10px] text-[#8A93A6]">
+                            {new Date(post.created_at || Date.now()).toLocaleString()}
                           </div>
                         </div>
-
-                        {isOwnProfile && (
-                          <button
-                            onClick={() => deleteWallPostMutation.mutate(post.id)}
-                            className="p-1.5 rounded hover:bg-red-500/10 text-[#8A93A6] hover:text-red-400"
-                            title="Удалить запись"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
                       </div>
 
-                      <p className="text-xs sm:text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed">
-                        {postContent}
-                      </p>
+                      {isOwnProfile && (
+                        <button
+                          onClick={() => deleteWallPostMutation.mutate(post.id)}
+                          className="p-1.5 rounded hover:bg-red-500/10 text-[#8A93A6] hover:text-red-400"
+                          title="Удалить запись со стены"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
 
-                      <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-[#8A93A6]">
-                        <span className="flex items-center gap-1.5 text-[#34D399]">
-                          <Heart size={13} className="fill-[#34D399]" /> {post.likes_count || 0}
-                        </span>
-                        <span>Стена пользователя</span>
-                      </div>
-                    </Card>
-                  );
-                })
+                    <p className="text-xs sm:text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed">
+                      {post.content}
+                    </p>
+
+                    {post.link_url && (
+                      <a
+                        href={post.link_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 p-2 bg-white/5 border border-white/10 rounded text-xs text-[#22D3EE] hover:underline"
+                      >
+                        <ExternalLink size={12} /> {post.link_url}
+                      </a>
+                    )}
+
+                    <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-[#8A93A6]">
+                      <span className="flex items-center gap-1.5 text-[#34D399]">
+                        <Heart size={13} className="fill-[#34D399]" /> {post.likes_count || 0}
+                      </span>
+                      <span>Стена исследователя</span>
+                    </div>
+                  </Card>
+                ))
               )}
             </div>
           )}
@@ -649,30 +840,143 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* МОДАЛКА РЕДАКТИРОВАНИЯ */}
-      <Modal isOpen={editOpen} onClose={() => setEditOpen(false)} title="Редактировать профиль">
-        <form onSubmit={(e) => updateProfileMutation.mutate(e)} className="space-y-4">
+      {/* МОДАЛКА РЕДАКТИРОВАНИЯ АНКЕТЫ */}
+      <Modal isOpen={editOpen} onClose={() => setEditOpen(false)} title="Анкета исследователя «Югра.Нефть»">
+        <form onSubmit={(e) => updateProfileMutation.mutate(e)} className="space-y-4 text-xs">
           <Input
-            label="ФИО / Имя исследователя"
-            value={form.full_name}
-            onChange={(e) => setForm({ ...form, full_name: e.target.value })}
+            label="ФИО / Отображаемое имя"
+            value={profileForm.full_name}
+            onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
             required
           />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">
+                Сетевой статус (присутствие)
+              </label>
+              <select
+                value={profileForm.status}
+                onChange={(e) => setProfileForm({ ...profileForm, status: e.target.value })}
+                className="w-full bg-[#050810] border border-white/15 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
+              >
+                {STATUS_OPTIONS.map((st) => (
+                  <option key={st.value} value={st.value}>
+                    {st.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <Input
+              label="Город / Населённый пункт ХМАО"
+              placeholder="пгт. Пойковский, Сургут..."
+              value={profileForm.city}
+              onChange={(e) => setProfileForm({ ...profileForm, city: e.target.value })}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Образовательное учреждение"
+              placeholder="МБОУ «СОШ № 1»"
+              value={profileForm.school}
+              onChange={(e) => setProfileForm({ ...profileForm, school: e.target.value })}
+            />
+            <Input
+              label="Класс / Курс"
+              placeholder="10 класс"
+              value={profileForm.grade}
+              onChange={(e) => setProfileForm({ ...profileForm, grade: e.target.value })}
+            />
+          </div>
+
+          <Input
+            label="Научные интересы / Специализация"
+            placeholder="Экология, нефтехимия, IT..."
+            value={profileForm.interests}
+            onChange={(e) => setProfileForm({ ...profileForm, interests: e.target.value })}
+          />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Telegram (для связи)"
+              placeholder="@username"
+              value={profileForm.telegram}
+              onChange={(e) => setProfileForm({ ...profileForm, telegram: e.target.value })}
+            />
+            <Input
+              label="ВКонтакте (VK)"
+              placeholder="id_или_логин"
+              value={profileForm.vk}
+              onChange={(e) => setProfileForm({ ...profileForm, vk: e.target.value })}
+            />
+          </div>
+
           <div>
             <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">
-              О себе / научные интересы
+              О себе / Краткая характеристика
             </label>
             <textarea
               rows={3}
-              value={form.bio}
-              onChange={(e) => setForm({ ...form, bio: e.target.value })}
-              className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
+              value={profileForm.bio}
+              onChange={(e) => setProfileForm({ ...profileForm, bio: e.target.value })}
+              placeholder="Расскажите о ваших инженерных целях и разработках..."
+              className="w-full bg-[#050810] border border-white/15 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
             />
           </div>
+
           <Button type="submit" className="w-full justify-center">
-            Сохранить изменения
+            Сохранить данные анкеты
           </Button>
         </form>
+      </Modal>
+
+      {/* МОДАЛКА ПРИВАТНОСТИ */}
+      <Modal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} title="Настройки приватности">
+        <div className="space-y-4 text-xs">
+          <div className="space-y-3 p-4 bg-[#050810] rounded-lg border border-white/10">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-white font-medium">Отображать статус онлайн</div>
+                <div className="text-[#8A93A6] text-[11px]">Показывать другим исследователям ваше присутствие</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={privacySettings.show_online}
+                onChange={(e) => setPrivacySettings({ ...privacySettings, show_online: e.target.checked })}
+                className="accent-[#00C853] w-4 h-4 cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-white/5">
+              <div>
+                <div className="text-white font-medium">Личные сообщения (ЛС)</div>
+                <div className="text-[#8A93A6] text-[11px]">Кто может писать вам в чате</div>
+              </div>
+              <select
+                value={privacySettings.allow_direct_messages}
+                onChange={(e) => setPrivacySettings({ ...privacySettings, allow_direct_messages: e.target.value })}
+                className="bg-[#030509] border border-white/15 rounded px-2 py-1 text-xs text-white"
+              >
+                <option value="all">Все участники</option>
+                <option value="mentor_only">Только мой наставник</option>
+                <option value="none">Никто</option>
+              </select>
+            </div>
+          </div>
+
+          <Button
+            onClick={() => {
+              setSettingsOpen(false);
+              toast('Параметры приватности обновлены!', 'success');
+            }}
+            variant="gold"
+            className="w-full justify-center"
+          >
+            Применить
+          </Button>
+        </div>
       </Modal>
 
       {/* МОДАЛКА ЖАЛОБЫ */}
@@ -682,7 +986,7 @@ export default function ProfilePage() {
             rows={4}
             value={reportReason}
             onChange={(e) => setReportReason(e.target.value)}
-            placeholder="Опишите причину жалобы для модераторов..."
+            placeholder="Опишите причину нарушения..."
             className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
             required
           />
@@ -701,6 +1005,9 @@ export default function ProfilePage() {
           <h2 className="text-xl font-bold text-white uppercase">Сертификат отличия</h2>
           <div className="text-lg font-semibold text-[#FFAA00]">{targetProfile.full_name}</div>
           <div className="font-mono text-xs text-zinc-300">
+            {targetProfile.school} • {targetProfile.city}
+          </div>
+          <div className="font-mono text-xs text-[#34D399]">
             Ранг: {highestRole.label} • Опыт: {targetProfile.xp || 100} XP
           </div>
           <Button variant="gold" onClick={() => window.print()} className="w-full justify-center">

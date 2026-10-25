@@ -13,8 +13,8 @@ import {
   Calculator,
   Compass,
   Trophy,
-  Sparkles,
-  MessageSquare
+  ExternalLink,
+  Link as LinkIcon
 } from 'lucide-react';
 
 const FALLBACK_NEWS = [
@@ -51,10 +51,11 @@ export default function HomePage() {
   const queryClient = useQueryClient();
 
   const [postText, setPostText] = useState('');
+  const [postLink, setPostLink] = useState('');
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [likedPostIds, setLikedPostIds] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('ugra_liked_posts') || '[]');
+      return JSON.parse(localStorage.getItem('ugra_liked_wall_posts') || '[]');
     } catch {
       return [];
     }
@@ -62,7 +63,7 @@ export default function HomePage() {
 
   // 1. Загрузка выпусков газеты
   const { data: newsArticles = FALLBACK_NEWS, isLoading: newsLoading } = useQuery({
-    queryKey: ['home_newspaper_v9'],
+    queryKey: ['home_newspaper_v10'],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -79,21 +80,20 @@ export default function HomePage() {
     }
   });
 
-  // 2. НАДЁЖНАЯ загрузка постов сообщества с объединением авторов и ролей
+  // 2. ЗАГРУЗКА ИЗ ТАБЛИЦЫ wall_posts ДЛЯ ОБЩЕЙ ЛЕНТЫ
   const { data: posts = [], isLoading: postsLoading } = useQuery({
-    queryKey: ['home_feed_posts_v9'],
+    queryKey: ['home_wall_posts_feed_v10'],
     queryFn: async () => {
       try {
-        // Запрашиваем посты
+        // Запрашиваем публичные посты из wall_posts
         const { data: rawPosts, error: pErr } = await supabase
-          .from('posts')
+          .from('wall_posts')
           .select('*')
-          .order('created_at', { ascending: false })
-          .limit(25);
+          .limit(30);
 
         if (pErr || !rawPosts) return [];
 
-        // Запрашиваем авторов и роли
+        // Запрашиваем профили и роли авторов
         const [profsRes, urRes] = await Promise.all([
           supabase.from('profiles').select('id, username, full_name, avatar_url, status'),
           supabase.from('user_roles').select('user_id, role_id')
@@ -106,26 +106,26 @@ export default function HomePage() {
           roleMap[ur.user_id].push(ROLE_ID_MAP[ur.role_id] || 'student');
         });
 
-        return rawPosts.map((p) => {
-          const author = profMap[p.author_id] || { username: '@исследователь', full_name: 'Участник' };
-          const highestRole = getHighestRole(roleMap[p.author_id] || ['student'], author.username);
-          const postBody = p.content || p.body || '';
+        // Сортируем: свежие сверху
+        const sorted = rawPosts.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
+        return sorted.map((p) => {
+          const author = profMap[p.author_id] || { username: '@исследователь', full_name: 'Участник платформы' };
+          const highestRole = getHighestRole(roleMap[p.author_id] || ['student'], author.username);
           return {
             ...p,
-            bodyText: postBody,
             author,
             highestRole
           };
         });
-      } catch (e) {
-        console.error('Ошибка загрузки ленты постов:', e);
+      } catch (err) {
+        console.error('Ошибка загрузки ленты wall_posts:', err);
         return [];
       }
     }
   });
 
-  // Публикация нового поста в общую ленту сообщества
+  // 3. Публикация нового поста в wall_posts
   const createPostMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -133,28 +133,29 @@ export default function HomePage() {
       if (profile?.is_banned) throw new Error('Ваш аккаунт ограничен модератором');
       checkRateLimit('home_post_create', 1500);
 
-      const content = postText.trim();
-      // Записываем и в body, и в content для совместимости схем
-      const { error } = await supabase.from('posts').insert([
-        {
-          author_id: user.id,
-          body: content,
-          content: content,
-          tags: ['ЮграНефть', 'Сообщество']
-        }
-      ]);
+      const payload = {
+        author_id: user.id,
+        content: postText.trim(),
+        link_url: postLink.trim() || null,
+        images: [],
+        visibility: 'public'
+      };
+
+      const { error } = await supabase.from('wall_posts').insert([payload]);
       if (error) throw error;
 
       await supabase.rpc('award_xp_secure', {
         p_action: 'community_post_created',
-        p_entity: 'post',
+        p_entity: 'wall_post',
         p_xp_delta: 20,
         p_badge: 'Голос Югры'
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['home_feed_posts_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v12'] });
       setPostText('');
+      setPostLink('');
       toast('Запись опубликована в ленте сообщества! (+20 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
@@ -168,10 +169,10 @@ export default function HomePage() {
       : [...likedPostIds, post.id];
 
     setLikedPostIds(updatedIds);
-    localStorage.setItem('ugra_liked_posts', JSON.stringify(updatedIds));
+    localStorage.setItem('ugra_liked_wall_posts', JSON.stringify(updatedIds));
 
-    await supabase.from('posts').update({ likes_count: nextLikes }).eq('id', post.id);
-    queryClient.invalidateQueries({ queryKey: ['home_feed_posts_v9'] });
+    await supabase.from('wall_posts').update({ likes_count: nextLikes }).eq('id', post.id);
+    queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
   };
 
   const leadArticle = newsArticles[0] || FALLBACK_NEWS[0];
@@ -274,7 +275,7 @@ export default function HomePage() {
         </Card>
       </section>
 
-      {/* 3. ЛЕНТА СООБЩЕСТВА С ОТОБРАЖЕНИЕМ СТАРШЕЙ РОЛИ */}
+      {/* 3. ЛЕНТА СООБЩЕСТВА ИЗ СИСТЕМНОЙ ТАБЛИЦЫ wall_posts */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -287,17 +288,27 @@ export default function HomePage() {
 
         {/* Форма публикации поста */}
         <Card className="p-5 bg-[#060a14]">
-          <form onSubmit={(e) => createPostMutation.mutate(e)} className="flex flex-col sm:flex-row gap-3">
-            <input
-              type="text"
+          <form onSubmit={(e) => createPostMutation.mutate(e)} className="space-y-3">
+            <textarea
+              rows={2}
               value={postText}
               onChange={(e) => setPostText(e.target.value)}
-              placeholder="Поделитесь результатами исследования, новостью школы или вопросом к наставникам..."
-              className="flex-1 bg-[#050810] border border-white/15 rounded-lg px-4 py-2.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
+              placeholder="Поделитесь результатами исследования, новостью школы или отчётом с промысла..."
+              className="w-full bg-[#050810] border border-white/15 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-[#00C853]"
+              required
             />
-            <Button type="submit" size="sm" disabled={createPostMutation.isPending}>
-              <Send size={14} /> Опубликовать (+20 XP)
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-2 justify-between items-stretch sm:items-center">
+              <input
+                type="text"
+                placeholder="Прикрепить ссылку (https://...)"
+                value={postLink}
+                onChange={(e) => setPostLink(e.target.value)}
+                className="bg-[#050810] border border-white/15 rounded px-3 py-1.5 text-xs text-white flex-1 focus:outline-none focus:border-[#FFAA00]"
+              />
+              <Button type="submit" size="sm" disabled={createPostMutation.isPending} className="shrink-0">
+                <Send size={14} /> Опубликовать (+20 XP)
+              </Button>
+            </div>
           </form>
         </Card>
 
@@ -329,20 +340,30 @@ export default function HomePage() {
                             <span className="font-mono text-xs text-[#FFAA00] font-bold group-hover:underline">
                               {uname}
                             </span>
-                            {/* СТАРШАЯ РОЛЬ АВТОРА */}
                             <Badge color={roleBadge.color}>{roleBadge.label}</Badge>
                           </div>
                           <div className="text-[11px] text-[#8A93A6]">{p.author?.full_name}</div>
                         </div>
                       </div>
                       <span className="font-mono text-[10px] text-[#4A5464]">
-                        {new Date(p.created_at).toLocaleDateString()}
+                        {new Date(p.created_at || Date.now()).toLocaleDateString()}
                       </span>
                     </div>
 
                     <p className="text-xs sm:text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap">
-                      {p.bodyText}
+                      {p.content}
                     </p>
+
+                    {p.link_url && (
+                      <a
+                        href={p.link_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 p-2 bg-white/5 border border-white/10 rounded text-xs text-[#22D3EE] hover:underline"
+                      >
+                        <ExternalLink size={12} /> {p.link_url}
+                      </a>
+                    )}
                   </div>
 
                   <div className="pt-3 border-t border-white/10 flex items-center justify-between">
@@ -357,7 +378,7 @@ export default function HomePage() {
                       <Heart size={13} className={isLiked ? 'fill-[#34D399]' : ''} />
                       <span>{p.likes_count || 0}</span>
                     </button>
-                    <span className="font-mono text-[10px] text-[#8A93A6]">Югра.Сообщество</span>
+                    <span className="font-mono text-[10px] text-[#8A93A6]">Стена Югры</span>
                   </div>
                 </Card>
               );
