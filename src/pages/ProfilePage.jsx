@@ -3,543 +3,487 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, uploadFileToStorage } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
-import { getLevelInfo } from '../data/levelsData';
-import UserWall from '../components/Wall/UserWall';
-import { Card, Button, Input, Avatar, Badge, Skeleton, useToast } from '../components/ui/DesignSystem';
+import { Card, Button, Input, Avatar, Badge, Modal, Skeleton, useToast } from '../components/ui/DesignSystem';
+import { getHighestRole, ROLE_ID_MAP } from '../utils/roleUtils';
 import {
-  FileDown,
-  UserCheck,
-  MessageSquare,
-  Lock,
-  Clock,
-  LogOut,
-  MapPin,
-  Briefcase,
-  Camera,
-  FolderPlus,
   Award,
-  Flame
+  Flame,
+  Upload,
+  Printer,
+  Edit3,
+  MessageSquare,
+  ShieldCheck,
+  Users,
+  UserCheck,
+  Flag,
+  FolderKanban,
+  ArrowRight
 } from 'lucide-react';
 
 export default function ProfilePage() {
-  const { username: routeUsername } = useParams();
-  const { user, profile: myProfile, roles: myRoles, refreshProfile, signOut } = useAuth();
+  const { username } = useParams();
+  const { user, profile: myProfile, roles: myRoles, refreshProfile } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState('wall'); // wall | projects | achievements | activity | settings
-  const cleanRoute = (routeUsername || '').replace('@', '').trim().toLowerCase();
-  const cleanMy = (myProfile?.username || '').replace('@', '').trim().toLowerCase();
-  const isOwnProfile = !routeUsername || (cleanMy && cleanRoute === cleanMy);
+  const [editOpen, setEditOpen] = useState(false);
+  const [certOpen, setCertOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('');
+  const [mentorInput, setMentorInput] = useState('');
 
-  const { data: profileData, isLoading, refetch } = useQuery({
-    queryKey: ['profile_full_v3', routeUsername, user?.id, myProfile?.id],
-    enabled: Boolean(user?.id || routeUsername || myProfile?.id),
+  const [form, setForm] = useState({
+    full_name: '',
+    bio: '',
+    status: 'online'
+  });
+
+  // Загружаем целевой профиль + список наставников + роли + подопечных + проекты
+  const { data: profileBundle, isLoading } = useQuery({
+    queryKey: ['profile_bundle_v8', username || myProfile?.id],
+    enabled: Boolean(username || myProfile?.id),
     queryFn: async () => {
-      let prof = null;
-      if (isOwnProfile && user?.id) {
-        const { data } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
-        prof = data || myProfile;
-      } else if (cleanRoute) {
+      let target = myProfile;
+      if (username) {
+        const clean = username.startsWith('@') ? username : `@${username}`;
         const { data } = await supabase
           .from('profiles')
-          .select('*')
-          .or(`username.ilike.@${cleanRoute},username.ilike.${cleanRoute}`)
+          .select('*, organizations(name, city)')
+          .ilike('username', clean)
           .maybeSingle();
-        prof = data;
+        if (data) target = data;
       }
 
-      if (!prof && isOwnProfile && myProfile) prof = myProfile;
-      if (!prof) return null;
+      if (!target?.id) return null;
 
-      const [orgRes, roleRes, logsRes, projRes] = await Promise.all([
-        prof.org_id
-          ? supabase.from('organizations').select('name, type, city').eq('id', prof.org_id).maybeSingle()
-          : Promise.resolve({ data: null }),
-        supabase.from('user_roles').select('role_id').eq('user_id', prof.id),
+      const [urRes, allProfsRes, projsRes, logsRes] = await Promise.all([
+        supabase.from('user_roles').select('user_id, role_id'),
+        supabase.from('profiles').select('id, username, full_name, xp, avatar_url, mentor_id'),
+        supabase.from('projects').select('*').eq('author_id', target.id).order('created_at', { ascending: false }),
         supabase
           .from('activity_log')
           .select('*')
-          .eq('user_id', prof.id)
+          .eq('user_id', target.id)
           .not('action', 'in', '("login","logout","registered")')
           .order('created_at', { ascending: false })
-          .limit(20),
-        supabase.from('projects').select('*').eq('author_id', prof.id).order('created_at', { ascending: false })
+          .limit(15)
       ]);
 
-      const roleMap = { 1: 'student', 2: 'teacher', 3: 'jury', 4: 'admin', 5: 'dev' };
-      const loadedRoles =
-        roleRes.data?.length > 0
-          ? roleRes.data.map((r) => roleMap[r.role_id] || 'student')
-          : isOwnProfile && myRoles?.length
-          ? myRoles
-          : ['student'];
+      const allProfs = allProfsRes.data || [];
+      const profMap = Object.fromEntries(allProfs.map((p) => [p.id, p]));
+      const allUr = urRes.data || [];
+
+      const targetRoleIds = allUr.filter((r) => r.user_id === target.id).map((r) => r.role_id);
+      const targetRoleNames = targetRoleIds.length
+        ? targetRoleIds.map((id) => ROLE_ID_MAP[id] || 'student')
+        : ['student'];
+      const highestRole = getHighestRole(targetRoleNames, target.username);
+
+      const teacherIds = new Set(allUr.filter((r) => r.role_id === 2 || r.role_id === 4).map((r) => r.user_id));
+      const mentorsList = allProfs.filter((p) => teacherIds.has(p.id));
+      const menteesList = allProfs.filter((p) => p.mentor_id === target.id);
 
       return {
-        prof: { ...prof, organizations: orgRes.data || prof.organizations },
-        roles: loadedRoles,
-        logs: logsRes.data || [],
-        projects: projRes.data || []
+        target,
+        targetRoleNames,
+        highestRole,
+        mentorObj: target.mentor_id ? profMap[target.mentor_id] : null,
+        mentorsList,
+        menteesList,
+        projects: projsRes.data || [],
+        activities: logsRes.data || []
       };
     }
   });
 
-  const activeProf = profileData?.prof || (isOwnProfile ? myProfile : null);
-  const activeRoles = profileData?.roles || (isOwnProfile ? myRoles : ['student']);
-  const logs = profileData?.logs || [];
-  const userProjects = profileData?.projects || [];
+  const targetProfile = profileBundle?.target;
+  const isOwnProfile = !username || targetProfile?.id === user?.id;
 
-  const [settingsForm, setSettingsForm] = useState(null);
-
-  const updateProfileMutation = useMutation({
-    mutationFn: async (patch) => {
-      const { error } = await supabase.from('profiles').update(patch).eq('id', user.id);
+  // Привязка к наставнику по ID или @username
+  const bindMentorMutation = useMutation({
+    mutationFn: async (mentorIdOrUsername) => {
+      let targetMentorId = mentorIdOrUsername;
+      if (typeof mentorIdOrUsername === 'string' && mentorIdOrUsername.startsWith('@')) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('id')
+          .ilike('username', mentorIdOrUsername.trim())
+          .maybeSingle();
+        if (!data) throw new Error('Наставник с таким @username не найден');
+        targetMentorId = data.id;
+      }
+      const { error } = await supabase
+        .from('profiles')
+        .update({ mentor_id: targetMentorId })
+        .eq('id', user.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_full_v3'] });
-      refreshProfile();
-      toast('Настройки профиля сохранены!', 'success');
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v8'] });
+      if (refreshProfile) refreshProfile();
+      setMentorInput('');
+      toast('Научный наставник успешно привязан к вашему профилю!', 'success');
     },
-    onError: (e) => toast(e.message, 'error')
+    onError: (err) => toast(err.message, 'error')
   });
 
-  const handleUploadFile = async (e, field) => {
+  // Сохранение изменений профиля
+  const updateProfileMutation = useMutation({
+    mutationFn: async (e) => {
+      e.preventDefault();
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          full_name: form.full_name.trim(),
+          bio: form.bio.trim(),
+          status: form.status
+        })
+        .eq('id', user.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v8'] });
+      if (refreshProfile) refreshProfile();
+      setEditOpen(false);
+      toast('Профиль успешно обновлён!', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // Отправка жалобы на профиль
+  const reportUserMutation = useMutation({
+    mutationFn: async (e) => {
+      e.preventDefault();
+      const { error } = await supabase.from('reports').insert([
+        {
+          reporter_id: user.id,
+          target_id: targetProfile.id,
+          reason: `[Жалоба на профиль] ${reportReason.trim()}`,
+          status: 'pending'
+        }
+      ]);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      setReportOpen(false);
+      setReportReason('');
+      toast('Жалоба отправлена администраторам!', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  const handleAvatarUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      toast('Загрузка изображения...', 'info');
-      const url = await uploadFileToStorage('avatars', user.id, file);
-      updateProfileMutation.mutate({ [field]: url });
+      toast('Загрузка аватара...', 'info');
+      const publicUrl = await uploadFileToStorage('avatars', user.id, file);
+      await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v8'] });
+      if (refreshProfile) refreshProfile();
+      toast('Аватар обновлён!', 'success');
     } catch (err) {
       toast(err.message, 'error');
     }
   };
 
-  const handleStartDirectMessage = async () => {
-    if (!activeProf?.id) return;
-    try {
-      const { data: chatId, error } = await supabase.rpc('get_or_create_direct_chat', {
-        target_user_id: activeProf.id
-      });
-      if (error) throw error;
-      navigate(`/chat?room=${chatId}`);
-    } catch {
-      navigate('/chat');
-    }
-  };
+  if (isLoading || !profileBundle) return <Skeleton className="h-96 w-full" />;
 
-  const handleInviteToProject = async () => {
-    if (!activeProf?.id) return;
-    await supabase.from('notifications').insert([
-      {
-        user_id: activeProf.id,
-        type: 'project_invite',
-        payload: { preview: `${myProfile?.username || '@user'} приглашает вас в проектную команду!` }
-      }
-    ]);
-    toast(`Приглашение в проект отправлено ${activeProf.username}!`, 'success');
-  };
-
-  const handleMakeMentor = async () => {
-    if (!activeProf?.id) return;
-    await supabase.from('mentor_links').insert([
-      {
-        student_id: user.id,
-        mentor_id: activeProf.id,
-        status: 'pending'
-      }
-    ]);
-    await supabase.from('notifications').insert([
-      {
-        user_id: activeProf.id,
-        type: 'mentor_request',
-        payload: { preview: `${myProfile?.username || '@user'} приглашает вас стать наставником` }
-      }
-    ]);
-    toast('Запрос на наставничество отправлен!', 'success');
-  };
-
-  if (isLoading && !myProfile) return <Skeleton className="h-96 w-full" />;
-
-  if (!activeProf) {
-    return (
-      <Card className="p-8 text-center space-y-4 font-mono text-xs text-[#8A93A6]">
-        <div className="text-white text-base">Профиль пользователя не найден</div>
-        <div className="flex justify-center gap-3">
-          <Button size="sm" variant="outline" onClick={() => refetch()}>
-            Повторить
-          </Button>
-          <Button size="sm" variant="danger" onClick={() => signOut()}>
-            <LogOut size={13} /> Выйти
-          </Button>
-        </div>
-      </Card>
-    );
-  }
-
-  const meta = activeProf.privacy || {};
-  const isPrivateAndHidden = !isOwnProfile && meta.show_profile === 'private';
-
-  if (isPrivateAndHidden) {
-    return (
-      <Card className="p-12 text-center space-y-4">
-        <Lock size={36} className="mx-auto text-[#FFAA00]" />
-        <h2 className="text-xl font-light text-white">Приватный профиль ({activeProf.username})</h2>
-        <Button size="sm" onClick={handleStartDirectMessage}>
-          <MessageSquare size={14} /> Написать лично
-        </Button>
-      </Card>
-    );
-  }
-
-  const lvlInfo = getLevelInfo(activeProf.xp || 100);
-  const badgesList =
-    Array.isArray(activeProf.badges) && activeProf.badges.length > 0
-      ? activeProf.badges
-      : ['Пионер Экосистемы', 'Защитник Югры'];
+  const { highestRole, targetRoleNames, mentorObj, mentorsList, menteesList, projects, activities } = profileBundle;
+  const level = Math.floor((targetProfile.xp || 100) / 250) + 1;
+  const badges = Array.isArray(targetProfile.badges) ? targetProfile.badges : ['Пионер Югры'];
 
   return (
-    <div className="space-y-6 print:bg-white print:text-black">
-      {/* ОБЛОЖКА ПРОФИЛЯ (COVER UPLOAD) + АВАТАР С РАМКОЙ УРОВНЯ */}
-      <div className="border border-white/10 bg-[#070b14] overflow-hidden relative">
-        <div
-          className="h-44 bg-cover bg-center relative border-b border-white/10 bg-gradient-to-r from-[#06281e] via-[#0c223b] to-[#291c06]"
-          style={activeProf.cover_url ? { backgroundImage: `url(${activeProf.cover_url})` } : {}}
-        >
-          <div className="absolute inset-0 bg-black/35" />
-          <div className="absolute top-4 left-5 flex flex-wrap gap-2">
-            <Badge color="gold">
-              Уровень {lvlInfo.level} / 50 · {lvlInfo.title}
-            </Badge>
-            <Badge color="emerald">Рамка: {lvlInfo.frameName}</Badge>
-          </div>
-
-          {isOwnProfile && (
-            <label className="absolute top-4 right-5 px-3 py-1.5 bg-black/70 border border-white/20 hover:border-[#FFAA00] font-mono text-[10px] uppercase text-white cursor-pointer flex items-center gap-1.5">
-              <Camera size={13} /> Загрузить обложку
-              <input type="file" accept="image/*" onChange={(e) => handleUploadFile(e, 'cover_url')} className="hidden" />
-            </label>
-          )}
-        </div>
-
-        <div className="px-6 sm:px-8 pb-6">
-          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 -mt-12 mb-5 relative z-10">
-            <div className="flex items-end gap-5">
-              <div className="relative">
-                <div className={`rounded-full p-1 bg-[#050810] ${lvlInfo.frameClass}`}>
-                  <Avatar
-                    src={activeProf.avatar_url}
-                    username={activeProf.username}
-                    status={meta.show_online === 'private' && !isOwnProfile ? undefined : activeProf.status}
-                    size="lg"
-                  />
-                </div>
-                {isOwnProfile && (
-                  <label className="absolute -bottom-1 -right-1 px-2 py-0.5 bg-[#FFAA00] text-[#050810] font-mono text-[9px] font-bold cursor-pointer">
-                    ФОТО
-                    <input type="file" accept="image/*" onChange={(e) => handleUploadFile(e, 'avatar_url')} className="hidden" />
-                  </label>
-                )}
-              </div>
-
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-2xl sm:text-3xl font-light text-white">{activeProf.full_name}</h1>
-                  <span className="font-mono text-sm text-[#FFAA00] font-bold">{activeProf.username}</span>
-                </div>
-                <div className="text-xs text-[#8A93A6] mt-1 flex flex-wrap items-center gap-3">
-                  <span className="text-[#34D399] inline-flex items-center gap-1">
-                    <Briefcase size={12} /> {meta.specialization || 'Исследователь экосистемы'}
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <MapPin size={12} className="text-[#FFAA00]" />
-                    {activeProf.organizations?.name || 'МБОУ «СОШ № 1» (пгт. Пойковский)'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Быстрые действия */}
-            <div className="flex flex-wrap items-center gap-2 print:hidden">
-              {isOwnProfile ? (
-                <>
-                  <select
-                    value={activeProf.status || 'online'}
-                    onChange={(e) => updateProfileMutation.mutate({ status: e.target.value })}
-                    className="bg-[#050810] border border-white/15 px-3 py-2 font-mono text-xs text-white"
-                  >
-                    <option value="online">🟢 Онлайн</option>
-                    <option value="away">🟡 Отошёл</option>
-                    <option value="dnd">🔴 Не беспокоить</option>
-                  </select>
-                  <Button variant="gold" size="sm" onClick={() => window.print()}>
-                    <FileDown size={14} /> Экспорт в PDF
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button size="sm" onClick={handleStartDirectMessage}>
-                    <MessageSquare size={14} /> Написать
-                  </Button>
-                  <Button size="sm" variant="gold" onClick={handleInviteToProject}>
-                    <FolderPlus size={14} /> Пригласить в проект
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={handleMakeMentor}>
-                    <UserCheck size={14} /> Сделать наставником
-                  </Button>
-                </>
+    <div className="space-y-8">
+      {/* ГЛАВНАЯ КАРТОЧКА ПРОФИЛЯ */}
+      <Card className="p-6 sm:p-8 border-[#00C853]/30 bg-gradient-to-r from-[#060a14] via-[#071914] to-[#050810] shadow-2xl">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
+            <div className="relative group">
+              <Avatar
+                src={targetProfile.avatar_url}
+                username={targetProfile.username}
+                status={targetProfile.status}
+                size="lg"
+              />
+              {isOwnProfile && (
+                <label className="absolute inset-0 rounded-full bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity">
+                  <Upload size={18} className="text-[#FFAA00]" />
+                  <input type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
+                </label>
               )}
             </div>
+
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-sm text-[#FFAA00] font-bold">{targetProfile.username}</span>
+                {/* СТАРШАЯ РОЛЬ ПОЛЬЗОВАТЕЛЯ */}
+                <Badge color={highestRole.color}>{highestRole.label}</Badge>
+                <Badge color="emerald">Уровень {level}</Badge>
+                <Badge color="gold">
+                  <Flame size={12} /> Серия {targetProfile.streak_days || 1} дн.
+                </Badge>
+                {targetProfile.is_banned && <Badge color="red">Аккаунт заблокирован</Badge>}
+              </div>
+
+              <h1 className="text-2xl sm:text-3xl font-semibold text-white">{targetProfile.full_name}</h1>
+              <p className="text-xs text-[#8A93A6]">
+                {targetProfile.organizations?.name || 'МБОУ «СОШ № 1» пгт. Пойковский (ХМАО-Югра)'}
+              </p>
+              {targetProfile.bio && <p className="text-xs text-zinc-200 max-w-xl pt-1">{targetProfile.bio}</p>}
+            </div>
           </div>
 
-          {/* Прогресс-бар 50 уровней + Роли */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-4 border-t border-white/10 items-center">
-            <div className="lg:col-span-6 space-y-1.5">
-              <div className="flex justify-between font-mono text-xs">
-                <span className="text-[#34D399]">
-                  Ранг {lvlInfo.level}/50: {lvlInfo.title}
-                </span>
-                <span className="text-[#FFAA00] font-bold">
-                  {lvlInfo.xp} / {lvlInfo.nextLevelXp} XP ({lvlInfo.progressPct}%)
-                </span>
-              </div>
-              <div className="w-full h-2.5 bg-[#050810] border border-white/10">
-                <div
-                  className="h-full bg-gradient-to-r from-[#00C853] to-[#FFAA00]"
-                  style={{ width: `${lvlInfo.progressPct}%` }}
-                />
-              </div>
+          <div className="flex flex-wrap gap-2.5">
+            {isOwnProfile ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setForm({
+                      full_name: targetProfile.full_name || '',
+                      bio: targetProfile.bio || '',
+                      status: targetProfile.status || 'online'
+                    });
+                    setEditOpen(true);
+                  }}
+                >
+                  <Edit3 size={14} /> Редактировать
+                </Button>
+                <Button variant="gold" size="sm" onClick={() => setCertOpen(true)}>
+                  <Printer size={14} /> Сертификат ХМАО
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={async () => {
+                    const { data } = await supabase.rpc('get_or_create_direct_chat', {
+                      target_user_id: targetProfile.id
+                    });
+                    navigate(data ? `/chat?room=${data}` : '/chat');
+                  }}
+                >
+                  <MessageSquare size={14} /> Написать в ЛС
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setReportOpen(true)} className="text-red-400">
+                  <Flag size={14} /> Пожаловаться
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      {/* СЕТКА: НАСТАВНИЧЕСТВО, РОЛЕВОЙ ПУЛЬТ И ДОСТИЖЕНИЯ */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Левая колонка: Наставничество и Ролевая специализация */}
+        <div className="lg:col-span-5 space-y-6">
+          {/* Блок Наставника */}
+          <Card className="p-6 space-y-4 border-[#22D3EE]/30 bg-[#060a14]">
+            <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
+              <UserCheck size={15} /> Научное наставничество
             </div>
 
-            <div className="lg:col-span-6 flex flex-wrap items-center justify-end gap-2">
-              <Badge color="gold">
-                <Flame size={12} /> Streak: {activeProf.streak_days || 1} дн.
-              </Badge>
-              {activeRoles.map((r) => (
-                <Badge key={r} color={r === 'admin' || r === 'dev' ? 'red' : r === 'jury' ? 'gold' : 'emerald'}>
-                  Роль: {r.toUpperCase()}
+            {mentorObj ? (
+              <div className="p-4 rounded-lg border border-[#22D3EE]/30 bg-[#050810] flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-mono text-[#8A93A6]">Текущий научный куратор:</div>
+                  <div className="text-sm font-medium text-white mt-0.5">{mentorObj.full_name}</div>
+                  <div className="font-mono text-xs text-[#FFAA00]">{mentorObj.username}</div>
+                </div>
+                <Badge color="cyan">Привязан</Badge>
+              </div>
+            ) : (
+              <p className="text-xs text-[#8A93A6]">
+                Наставник ещё не выбран. Привяжите наставника для кураторства ваших инженерных проектов.
+              </p>
+            )}
+
+            {isOwnProfile && (
+              <div className="space-y-3 pt-2 border-t border-white/10">
+                <div className="text-xs text-zinc-300">Выбрать наставника из списка преподавателей:</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {mentorsList.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => bindMentorMutation.mutate(m.id)}
+                      className={`px-2.5 py-1.5 rounded border font-mono text-xs transition-all ${
+                        targetProfile.mentor_id === m.id
+                          ? 'border-[#22D3EE] bg-[#22D3EE]/20 text-white font-bold'
+                          : 'border-white/10 bg-[#050810] text-zinc-300 hover:border-[#22D3EE]'
+                      }`}
+                    >
+                      {m.username}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <Input
+                    placeholder="Или введите @ник_наставника"
+                    value={mentorInput}
+                    onChange={(e) => setMentorInput(e.target.value)}
+                  />
+                  <Button size="sm" variant="outline" onClick={() => bindMentorMutation.mutate(mentorInput)}>
+                    Привязать
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Если сам пользователь является Наставником — показываем его учеников */}
+            {targetRoleNames.includes('teacher') && (
+              <div className="pt-4 border-t border-white/10 space-y-2">
+                <div className="font-mono text-xs uppercase text-[#34D399]">
+                  Подопечные ученики ({menteesList.length}):
+                </div>
+                {menteesList.length === 0 ? (
+                  <div className="text-xs text-[#8A93A6]">Пока нет привязанных учеников</div>
+                ) : (
+                  menteesList.map((st) => (
+                    <div
+                      key={st.id}
+                      className="p-2.5 rounded border border-white/5 bg-[#050810] flex items-center justify-between text-xs"
+                    >
+                      <span className="font-mono text-[#FFAA00]">{st.username}</span>
+                      <span className="text-zinc-300">{st.full_name}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </Card>
+
+          {/* Бейджи и награды */}
+          <Card className="p-6 space-y-4 border-white/10 bg-[#060a14]">
+            <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00] flex items-center gap-2">
+              <Award size={15} /> Заслуженные знаки отличия
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {badges.map((b, i) => (
+                <Badge key={i} color="gold">
+                  ★ {b}
                 </Badge>
               ))}
             </div>
-          </div>
+          </Card>
         </div>
-      </div>
 
-      {/* 5 ТАБОВ ПРОФИЛЯ: ПОСТЫ | ПРОЕКТЫ | ДОСТИЖЕНИЯ | АКТИВНОСТЬ | НАСТРОЙКИ */}
-      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-3 print:hidden">
-        {[
-          { id: 'wall', label: '01 / Посты (Стена)' },
-          { id: 'projects', label: `02 / Проекты (${userProjects.length})` },
-          { id: 'achievements', label: `03 / Достижения и XP-календарь` },
-          { id: 'activity', label: `04 / Активность (${logs.length})` },
-          ...(isOwnProfile ? [{ id: 'settings', label: '05 / Настройки и Приватность' }] : [])
-        ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`px-4 py-2 font-mono text-xs uppercase border transition-all ${
-              activeTab === t.id
-                ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399] font-bold'
-                : 'border-white/10 text-[#8A93A6] hover:text-white'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ТАБ 1: ЛИЧНАЯ СТЕНА ПОЛЬЗОВАТЕЛЯ */}
-      {activeTab === 'wall' && (
-        <div>
-          {!isOwnProfile && meta.show_wall === 'private' ? (
-            <Card className="p-8 text-center font-mono text-xs text-[#8A93A6]">
-              Пользователь скрыл свою стену в настройках приватности.
-            </Card>
-          ) : (
-            <UserWall targetUserId={activeProf.id} isOwnWall={isOwnProfile} />
-          )}
-        </div>
-      )}
-
-      {/* ТАБ 2: ПРОЕКТЫ */}
-      {activeTab === 'projects' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {userProjects.length === 0 ? (
-            <Card className="md:col-span-2 p-8 text-center font-mono text-xs text-[#8A93A6]">
-              У пользователя пока нет опубликованных проектов.
-            </Card>
-          ) : (
-            userProjects.map((p) => (
-              <Card key={p.id} className="p-5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <Badge color="emerald">{p.impact_metric}</Badge>
-                  <Badge color="gold">Статус: {p.status}</Badge>
-                </div>
-                <h3 className="text-base font-medium text-white">{p.title}</h3>
-                <p className="text-xs text-[#8A93A6]">{p.description}</p>
-              </Card>
-            ))
-          )}
-        </div>
-      )}
-
-      {/* ТАБ 3: ДОСТИЖЕНИЯ + XP-КАЛЕНДАРЬ */}
-      {activeTab === 'achievements' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <Card className="lg:col-span-6 space-y-4">
-            <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00] flex items-center gap-2">
-              <Award size={15} /> Коллекция бейджей и наград
+        {/* Правая колонка: Проекты и портфолио результатов */}
+        <Card className="lg:col-span-7 p-6 space-y-5 border-white/10 bg-[#060a14]">
+          <div className="flex items-center justify-between border-b border-white/10 pb-3">
+            <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center gap-2">
+              <FolderKanban size={15} /> Инженерные проекты и достижения ({projects.length})
             </div>
-            <div className="flex flex-wrap gap-2">
-              {badgesList.map((b, i) => (
-                <div key={i} className="p-3 border border-[#FFAA00]/40 bg-[#FFAA00]/10 font-mono text-xs text-[#FFAA00]">
-                  🏆 {b}
+            <Button size="sm" variant="outline" onClick={() => navigate('/activities')}>
+              Перейти в Мастерскую <ArrowRight size={13} />
+            </Button>
+          </div>
+
+          <div className="space-y-3">
+            {projects.length === 0 ? (
+              <div className="text-xs text-[#8A93A6] font-mono py-4">
+                Пользователь ещё не подавал проектов на защиту.
+              </div>
+            ) : (
+              projects.map((pr) => (
+                <div
+                  key={pr.id}
+                  className="p-4 rounded-lg border border-white/10 bg-[#050810] flex items-center justify-between gap-4"
+                >
+                  <div>
+                    <div className="text-sm font-medium text-white">{pr.title}</div>
+                    <div className="text-xs text-[#34D399] font-mono mt-0.5">{pr.impact_metric}</div>
+                  </div>
+                  <Badge color="emerald">{pr.status}</Badge>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="pt-4 border-t border-white/10 space-y-2">
+            <div className="font-mono text-xs uppercase tracking-widest text-[#8A93A6] flex items-center gap-2">
+              <ShieldCheck size={14} /> Верифицированная история опыта (XP)
+            </div>
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {activities.map((act) => (
+                <div
+                  key={act.id}
+                  className="p-3 rounded border border-white/5 bg-[#050810] flex items-center justify-between text-xs"
+                >
+                  <span className="font-mono text-white uppercase">{act.action}</span>
+                  <span className="font-mono text-[#34D399]">
+                    {new Date(act.created_at).toLocaleDateString()}
+                  </span>
                 </div>
               ))}
             </div>
-          </Card>
-
-          <Card className="lg:col-span-6 space-y-4">
-            <div className="font-mono text-xs uppercase tracking-widest text-[#34D399]">
-              XP-Календарь активности (Последние 14 дней)
-            </div>
-            <div className="grid grid-cols-7 gap-2">
-              {Array.from({ length: 14 }).map((_, idx) => {
-                const d = new Date(Date.now() - (13 - idx) * 86400000);
-                const dateStr = d.toISOString().slice(0, 10);
-                const hasAct =
-                  logs.some((l) => l.created_at?.slice(0, 10) === dateStr) || idx === 13;
-                return (
-                  <div
-                    key={idx}
-                    className={`p-2.5 border text-center font-mono text-[10px] ${
-                      hasAct
-                        ? 'border-[#00C853] bg-[#00C853]/20 text-[#34D399] font-bold'
-                        : 'border-white/10 bg-[#050810] text-[#4A5464]'
-                    }`}
-                  >
-                    <div>{d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</div>
-                    <div className="mt-1">{hasAct ? '+XP' : '—'}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* ТАБ 4: АКТИВНОСТЬ */}
-      {activeTab === 'activity' && (
-        <Card className="space-y-3">
-          {!isOwnProfile && meta.show_activity === 'private' ? (
-            <div className="text-xs font-mono text-[#8A93A6] py-6 text-center">
-              История активности скрыта настройками приватности.
-            </div>
-          ) : logs.length === 0 ? (
-            <div className="text-xs font-mono text-[#8A93A6] py-6 text-center">Записей активности пока нет.</div>
-          ) : (
-            logs.map((l) => (
-              <div key={l.id} className="p-3 border-l-2 border-[#00C853] bg-[#050810] flex justify-between text-xs">
-                <span className="font-mono text-white">
-                  {l.action} <span className="text-[#8A93A6]">({l.entity})</span>
-                </span>
-                <span className="font-mono text-[10px] text-[#4A5464]">
-                  {new Date(l.created_at).toLocaleString()}
-                </span>
-              </div>
-            ))
-          )}
+          </div>
         </Card>
-      )}
+      </div>
 
-      {/* ТАБ 5: НАСТРОЙКИ И ПРИВАТНОСТЬ */}
-      {activeTab === 'settings' && isOwnProfile && (
-        <Card className="p-6 max-w-2xl space-y-4">
-          <div className="font-mono text-xs uppercase tracking-widest text-[#FFAA00]">
-            Настройки анкеты и приватности (Кто видит профиль, стену, активность, онлайн)
-          </div>
+      {/* МОДАЛКА РЕДАКТИРОВАНИЯ */}
+      <Modal isOpen={editOpen} onClose={() => setEditOpen(false)} title="Редактировать профиль">
+        <form onSubmit={(e) => updateProfileMutation.mutate(e)} className="space-y-4">
           <Input
-            label="ФИО"
-            defaultValue={activeProf.full_name}
-            onChange={(e) => setSettingsForm((s) => ({ ...s, full_name: e.target.value }))}
+            label="ФИО / Имя исследователя"
+            value={form.full_name}
+            onChange={(e) => setForm({ ...form, full_name: e.target.value })}
+            required
           />
-          <Input
-            label="Краткий Bio / Специализация"
-            defaultValue={activeProf.bio}
-            onChange={(e) => setSettingsForm((s) => ({ ...s, bio: e.target.value }))}
-          />
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-            <div>
-              <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">Кто видит профиль</label>
-              <select
-                defaultValue={meta.show_profile || 'public'}
-                onChange={(e) => setSettingsForm((s) => ({ ...s, show_profile: e.target.value }))}
-                className="w-full bg-[#050810] border border-white/15 px-3 py-2 text-xs text-white"
-              >
-                <option value="public">Все участники</option>
-                <option value="private">Только я</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">Кто видит стену</label>
-              <select
-                defaultValue={meta.show_wall || 'public'}
-                onChange={(e) => setSettingsForm((s) => ({ ...s, show_wall: e.target.value }))}
-                className="w-full bg-[#050810] border border-white/15 px-3 py-2 text-xs text-white"
-              >
-                <option value="public">Все участники</option>
-                <option value="private">Только я</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">Кто видит активность</label>
-              <select
-                defaultValue={meta.show_activity || 'public'}
-                onChange={(e) => setSettingsForm((s) => ({ ...s, show_activity: e.target.value }))}
-                className="w-full bg-[#050810] border border-white/15 px-3 py-2 text-xs text-white"
-              >
-                <option value="public">Все участники</option>
-                <option value="private">Скрыто</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">Статус онлайн</label>
-              <select
-                defaultValue={meta.show_online || 'public'}
-                onChange={(e) => setSettingsForm((s) => ({ ...s, show_online: e.target.value }))}
-                className="w-full bg-[#050810] border border-white/15 px-3 py-2 text-xs text-white"
-              >
-                <option value="public">Показывать всем</option>
-                <option value="private">Скрывать онлайн</option>
-              </select>
-            </div>
+          <div>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">О себе / научные интересы</label>
+            <textarea
+              rows={3}
+              value={form.bio}
+              onChange={(e) => setForm({ ...form, bio: e.target.value })}
+              className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
+            />
           </div>
-
-          <Button
-            onClick={() =>
-              updateProfileMutation.mutate({
-                full_name: settingsForm?.full_name ?? activeProf.full_name,
-                bio: settingsForm?.bio ?? activeProf.bio,
-                privacy: {
-                  ...meta,
-                  show_profile: settingsForm?.show_profile ?? meta.show_profile ?? 'public',
-                  show_wall: settingsForm?.show_wall ?? meta.show_wall ?? 'public',
-                  show_activity: settingsForm?.show_activity ?? meta.show_activity ?? 'public',
-                  show_online: settingsForm?.show_online ?? meta.show_online ?? 'public'
-                }
-              })
-            }
-          >
-            Сохранить настройки
+          <Button type="submit" className="w-full justify-center">
+            Сохранить изменения
           </Button>
-        </Card>
-      )}
+        </form>
+      </Modal>
+
+      {/* МОДАЛКА ЖАЛОБЫ НА ПРОФИЛЬ */}
+      <Modal isOpen={reportOpen} onClose={() => setReportOpen(false)} title={`Жалоба на ${targetProfile.username}`}>
+        <form onSubmit={(e) => reportUserMutation.mutate(e)} className="space-y-4">
+          <textarea
+            rows={4}
+            value={reportReason}
+            onChange={(e) => setReportReason(e.target.value)}
+            placeholder="Опишите причину жалобы для модераторов..."
+            className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
+            required
+          />
+          <Button type="submit" variant="gold" className="w-full justify-center">
+            Отправить жалобу
+          </Button>
+        </form>
+      </Modal>
+
+      {/* МОДАЛКА СЕРТИФИКАТА */}
+      <Modal isOpen={certOpen} onClose={() => setCertOpen(false)} title="Сертификат исследователя ХМАО">
+        <div className="p-6 border-2 border-[#FFAA00] bg-[#050810] text-center space-y-4">
+          <div className="font-mono text-xs uppercase tracking-widest text-[#34D399]">
+            ЮГРА.НЕФТЬ • ЗЕЛЁНАЯ ЮГРА
+          </div>
+          <h2 className="text-xl font-bold text-white uppercase">Сертификат отличия</h2>
+          <div className="text-lg font-semibold text-[#FFAA00]">{targetProfile.full_name}</div>
+          <div className="font-mono text-xs text-zinc-300">
+            Ранг: {highestRole.label} • Опыт: {targetProfile.xp || 100} XP
+          </div>
+          <Button variant="gold" onClick={() => window.print()} className="w-full justify-center">
+            <Printer size={14} /> Распечатать / Сохранить в PDF
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -4,98 +4,172 @@ import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import HmaoEcoMap from '../components/Map/HmaoEcoMap';
 import { Card, Button, Input, Badge, Modal, Skeleton, useToast } from '../components/ui/DesignSystem';
-import { EyeOff, Calendar, Video, FastForward, Award, Shield, FileCheck, FolderPlus } from 'lucide-react';
+import {
+  EyeOff,
+  Calendar,
+  Video,
+  FastForward,
+  Award,
+  FolderPlus,
+  Users,
+  CheckCircle2,
+  Sliders,
+  ShieldCheck,
+  RotateCcw,
+  Sparkles,
+  UserCheck,
+  BookOpen
+} from 'lucide-react';
 
 const STATUS_RU = {
   draft: { label: 'Черновик', color: 'zinc' },
-  submitted: { label: 'На рассмотрении комиссии', color: 'gold' },
-  scheduled: { label: 'Назначена дата защиты', color: 'cyan' },
-  defended: { label: 'Защищён перед комиссией', color: 'emerald' },
-  approved: { label: 'Одобрен и внедрён', color: 'emerald' },
-  revision: { label: 'Требуется доработка', color: 'red' },
-  rejected: { label: 'Отклонён', color: 'red' },
-  active: { label: 'Активный', color: 'cyan' },
+  submitted: { label: 'На рассмотрении', color: 'gold' },
+  scheduled: { label: 'Допущен наставником к защите', color: 'cyan' },
+  defended: { label: 'Защищён перед жюри', color: 'emerald' },
+  approved: { label: 'Одобрен к внедрению', color: 'emerald' },
+  revision: { label: 'Отправлен на доработку', color: 'red' },
+  rejected: { label: 'Отклонён комиссией', color: 'red' },
+  active: { label: 'В разработке', color: 'cyan' },
   completed: { label: 'Завершён', color: 'emerald' }
 };
 
 const PITCH_SIM_STEPS = [
   {
     step: 1,
-    title: 'Шаг 1 из 4: Формулировка проблемы',
-    hint: 'О чём рассказать экспертной комиссии в первую минуту выступления?',
-    fact: 'Экспертная комиссия жюри оценивает актуальность проблемы с весом 25% от итогового балла.',
+    title: 'Шаг 1 из 4: Формулировка проблемы месторождения',
+    hint: 'С чего начать доклад перед экспертной комиссией «Зелёная Югра»?',
+    fact: 'Комиссия жюри оценивает актуальность экологической проблемы для ХМАО с весом 25% от общей оценки.',
     options: [
-      { label: '🎯 Назвать конкретную экологическую проблему региона и подкрепить цифрами потерь', ok: true, msg: '✅ Верно! Конкретные метрики сразу привлекают внимание экспертов.' },
-      { label: '📜 Читать длинную историческую справку о месторождении на 10 минут', ok: false, msg: '❌ Неверно. Регламент защиты строгий — сразу переходите к сути.' }
+      {
+        label: '🎯 Озвучить конкретную экологическую проблему промысла и привести точные цифры потерь',
+        ok: true,
+        msg: '✅ Отлично! Точные цифры сразу фокусируют внимание экспертов.'
+      },
+      {
+        label: '📜 Рассказывать общую теорию возникновения нефти на протяжении 7 минут',
+        ok: false,
+        msg: '❌ Неверно. Время питча строго ограничено — переходите сразу к проблематике.'
+      }
     ]
   },
   {
     step: 2,
     title: 'Шаг 2 из 4: Инженерно-технологическое решение',
-    hint: 'Как именно ваша разработка устраняет проблему?',
-    fact: 'Научная новизна и технологическая реализуемость приносят до 30% суммарного балла.',
+    hint: 'Как убедительно представить разработанную технологию?',
+    fact: 'Научная новизна и инженерная проработка приносят 30% итогового балла защиты.',
     options: [
-      { label: '⚙️ Показать схему установки/биопрепарата и пошаговый принцип работы', ok: true, msg: '✅ Верно! Наглядная инженерная схема доказывает зрелость проекта.' },
-      { label: '🤷 Ограничиться общими словами «нужно беречь природу» без чертежей', ok: false, msg: '❌ Неверно. Жюри ждёт инженерное или цифровое решение.' }
+      {
+        label: '⚙️ Показать технологическую схему установки или биопрепарата и объяснить принцип действия',
+        ok: true,
+        msg: '✅ Верно! Инженерная схема доказывает практическую реализуемость.'
+      },
+      {
+        label: '🤷 Сказать, что нужно просто бережнее относиться к тайге без технических решений',
+        ok: false,
+        msg: '❌ Неверно. На защите требуется конкретное инженерное или IT-решение.'
+      }
     ]
   },
   {
     step: 3,
-    title: 'Шаг 3 из 4: Измеримый эффект (Целевые показатели)',
-    hint: 'Какую измеримую пользу получит недропользователь или округ?',
-    fact: 'Экономическая обоснованность — ключевой фактор для получения гранта и внедрения.',
+    title: 'Шаг 3 из 4: Измеримый экологический эффект',
+    hint: 'Какой главный показатель ждёт комиссия от вашего проекта?',
+    fact: 'Расчёт сокращения углеродного следа CO₂ и окупаемости даёт ещё 25% успеха.',
     options: [
-      { label: '📉 Привести точный эффект: снижение выбросов CO₂ на 35% и окупаемость за 2 года', ok: true, msg: '✅ Верно! Измеримые показатели убеждают представителей нефтяных компаний.' },
-      { label: '💭 Сказать, что расчёты будут выполнены когда-нибудь позже', ok: false, msg: '❌ Неверно. Без доказанного эффекта проект отправляется на доработку.' }
+      {
+        label: '📉 Привести расчёт: снижение выбросов CO₂ на 32% и срок окупаемости внедрения 1,5 года',
+        ok: true,
+        msg: '✅ Блестяще! Язык цифр и экологического эффекта убеждает промышленников.'
+      },
+      {
+        label: '💭 Ответить, что экономику и экологический эффект вы не считали',
+        ok: false,
+        msg: '❌ Неверно. Без измеримого эффекта проект вернут на доработку.'
+      }
     ]
   },
   {
     step: 4,
-    title: 'Шаг 4 из 4: Ответы на вопросы экспертов',
-    hint: 'Как грамотно аргументировать свою позицию при каверзном вопросе жюри?',
-    fact: 'Уверенная защита и владение ГОСТами добавляют +120 баллов опыта (XP).',
+    title: 'Шаг 4 из 4: Сессия вопросов и ответов жюри',
+    hint: 'Эксперт жюри задаёт сложный вопрос по зимней эксплуатации в условиях Югры. Ваши действия?',
+    fact: 'Грамотная аргументация и знание региональной специфики приносят +120 XP.',
     options: [
-      { label: '🤝 Поблагодарить эксперта и ответить, опираясь на свои расчёты и нормативную базу', ok: true, msg: '✅ Превосходно! Вы полностью готовы к реальной защите проекта!' },
-      { label: '😠 Вступить в агрессивный спор с членами комиссии', ok: false, msg: '❌ Неверно. Аргументированный научный диалог ценится гораздо выше.' }
+      {
+        label: '🤝 Поблагодарить за вопрос и привести данные по морозостойкости материалов до -50 °C',
+        ok: true,
+        msg: '✅ Превосходно! Вы полностью готовы к реальной защите перед жюри!'
+      },
+      {
+        label: '😠 Начать спорить с экспертом и говорить, что вопрос не по теме',
+        ok: false,
+        msg: '❌ Неверно. Культура научной дискуссии — важный критерий оценки.'
+      }
     ]
   }
 ];
 
 export default function ActivitiesPage() {
-  const { user, hasRole } = useAuth();
+  const { user, profile, hasRole, refreshProfile } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  const isTeacher = hasRole(['teacher', 'admin', 'dev']);
+  const isJury = hasRole(['jury', 'admin', 'dev']);
 
   const [tab, setTab] = useState('projects');
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedProj, setSelectedProj] = useState(null);
 
+  // Форма создания проекта
   const [projForm, setProjForm] = useState({
     title: '',
     description: '',
     impact_metric: 'Снижение выбросов CO₂ на 30%',
-    status: 'submitted',
     blind_mode: false,
     pitch_at: '',
-    call_link: ''
+    call_link: '',
+    mentor_id: profile?.mentor_id || ''
   });
 
-  const [scores, setScores] = useState({ science: 9, relevance: 9, feasibility: 8, pitch: 9, comment: '' });
+  // Состояния для кабинета Наставника
+  const [mentorNotes, setMentorNotes] = useState({});
+
+  // Состояния для пульта Жюри
+  const [scores, setScores] = useState({
+    science: 9,
+    relevance: 9,
+    feasibility: 8,
+    pitch: 9,
+    comment: '',
+    decision: 'approved'
+  });
+
+  // Тренажёр
   const [simStep, setSimStep] = useState(0);
   const [simFeedback, setSimFeedback] = useState(null);
 
-  const isJuryOrAdmin = hasRole(['jury', 'admin', 'dev']);
-
-  const { data: projects = [], isLoading } = useQuery({
-    queryKey: ['projects_defense_v5'],
+  // Загрузка всех проектов, рецензий, профилей и списка наставников
+  const { data: bundle, isLoading } = useQuery({
+    queryKey: ['activities_full_v8', user?.id],
     queryFn: async () => {
-      const { data: projs } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
-      const { data: revs } = await supabase.from('project_reviews').select('*');
-      const { data: profs } = await supabase.from('profiles').select('id, username, full_name');
+      const [projsRes, revsRes, profsRes, urRes] = await Promise.all([
+        supabase.from('projects').select('*').order('created_at', { ascending: false }),
+        supabase.from('project_reviews').select('*'),
+        supabase.from('profiles').select('id, username, full_name, xp, mentor_id, avatar_url'),
+        supabase.from('user_roles').select('user_id, role_id')
+      ]);
 
-      const profMap = Object.fromEntries((profs || []).map((p) => [p.id, p]));
-      return (projs || []).map((pr) => {
-        const prReviews = (revs || []).filter((r) => r.project_id === pr.id);
+      const profs = profsRes.data || [];
+      const profMap = Object.fromEntries(profs.map((p) => [p.id, p]));
+      const revs = revsRes.data || [];
+      const teacherIds = new Set(
+        (urRes.data || []).filter((r) => r.role_id === 2 || r.role_id === 4).map((r) => r.user_id)
+      );
+
+      const mentorsList = profs.filter((p) => teacherIds.has(p.id));
+
+      const enrichedProjects = (projsRes.data || []).map((pr) => {
+        const prReviews = revs.filter((r) => r.project_id === pr.id);
         const avgWeighted =
           prReviews.length > 0
             ? (
@@ -111,27 +185,55 @@ export default function ActivitiesPage() {
                 ) / prReviews.length
               ).toFixed(1)
             : null;
+
         return {
           ...pr,
           authorProfile: profMap[pr.author_id],
+          mentorProfile: pr.mentor_id ? profMap[pr.mentor_id] : null,
           reviews: prReviews,
           avgWeighted
         };
       });
+
+      const myMentees = profs.filter((p) => p.mentor_id === user?.id);
+
+      return {
+        projects: enrichedProjects,
+        mentorsList,
+        myMentees,
+        profMap
+      };
     }
   });
 
+  // Привязка к наставнику в 1 клик
+  const bindMentorMutation = useMutation({
+    mutationFn: async (mentorId) => {
+      if (!user?.id) throw new Error('Войдите в аккаунт');
+      const { error } = await supabase.from('profiles').update({ mentor_id: mentorId }).eq('id', user.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
+      if (refreshProfile) refreshProfile();
+      toast('Вы успешно привязались к научному наставнику!', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // Создание проекта
   const createProjectMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
-      if (!user?.id) throw new Error('Пожалуйста, выполните вход');
+      if (!user?.id) throw new Error('Необходима авторизация');
 
       const payload = {
         title: projForm.title.trim(),
         description: projForm.description.trim(),
-        impact_metric: projForm.impact_metric,
+        impact_metric: projForm.impact_metric.trim(),
         status: 'submitted',
         author_id: user.id,
+        mentor_id: projForm.mentor_id || profile?.mentor_id || null,
         blind_mode: Boolean(projForm.blind_mode)
       };
 
@@ -149,22 +251,56 @@ export default function ActivitiesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects_defense_v5'] });
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
       setCreateOpen(false);
       setProjForm({
         title: '',
         description: '',
         impact_metric: 'Снижение выбросов CO₂ на 30%',
-        status: 'submitted',
         blind_mode: false,
         pitch_at: '',
-        call_link: ''
+        call_link: '',
+        mentor_id: profile?.mentor_id || ''
       });
-      toast('Проект успешно подан на рассмотрение комиссии! (+75 XP)', 'success');
+      toast('Проект отправлен на проверку! (+75 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
+  // Действие Наставника: Курирование и допуск проекта к защите
+  const mentorCurateMutation = useMutation({
+    mutationFn: async ({ proj, newStatus }) => {
+      const note = mentorNotes[proj.id] || '';
+      const updatedDesc = note
+        ? `${proj.description}\n\n[Рекомендация наставника ${profile?.username || ''}]: ${note}`
+        : proj.description;
+
+      const { error } = await supabase
+        .from('projects')
+        .update({
+          status: newStatus,
+          mentor_id: user.id,
+          description: updatedDesc
+        })
+        .eq('id', proj.id);
+
+      if (error) throw error;
+
+      await supabase.rpc('award_xp_secure', {
+        p_action: 'mentor_curated_project',
+        p_entity: 'project',
+        p_xp_delta: 50,
+        p_badge: 'Наставник проектной смены'
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
+      toast('Кураторское решение сохранено! Начислено +50 XP наставника', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // Действие Эксперта Жюри: Оценка проекта по 4 критериям
   const submitJuryReviewMutation = useMutation({
     mutationFn: async (proj) => {
       const { error } = await supabase.from('project_reviews').upsert([
@@ -176,95 +312,168 @@ export default function ActivitiesPage() {
           score_feasibility: Number(scores.feasibility),
           score_pitch: Number(scores.pitch),
           comment: scores.comment,
-          decision: 'approved'
+          decision: scores.decision
         }
       ]);
       if (error) throw error;
 
-      await supabase.from('projects').update({ status: 'defended' }).eq('id', proj.id);
+      const nextStatus = scores.decision === 'approved' ? 'defended' : 'revision';
+      await supabase.from('projects').update({ status: nextStatus }).eq('id', proj.id);
+
+      await supabase.rpc('award_xp_secure', {
+        p_action: 'jury_audit_completed',
+        p_entity: 'project_review',
+        p_xp_delta: 75,
+        p_badge: 'Аудитор Зелёной Югры'
+      });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects_defense_v5'] });
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
       setSelectedProj(null);
-      toast('Оценка жюри утверждена!', 'success');
+      toast('Экспертный аудит жюри зафиксирован! (+75 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
   if (isLoading) return <Skeleton className="h-96 w-full" />;
 
+  const projects = bundle?.projects || [];
+  const mentorsList = bundle?.mentorsList || [];
+  const myMentees = bundle?.myMentees || [];
+  const currentMentorObj = profile?.mentor_id ? bundle?.profMap?.[profile.mentor_id] : null;
+
   return (
     <div className="space-y-8">
-      {/* Шапка раздела */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-white/10 pb-5">
+      {/* ШАПКА И НАВИГАЦИЯ ПО РОЛЕВЫМ АКТИВНОСТЯМ */}
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-white/10 pb-5">
         <div>
-          <div className="eyebrow">Мастерская инженерных инициатив «Зелёный след»</div>
+          <div className="eyebrow">Ролевая экосистема проектов «Зелёный след»</div>
           <h1 className="text-3xl font-light text-white mt-1">
-            Защита проектов и <strong className="font-semibold text-[#00C853]">Геокарта ХМАО</strong>
+            Проекты, Наставничество и <strong className="font-semibold text-[#00C853]">Экспертиза ХМАО</strong>
           </h1>
         </div>
 
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setTab('projects')}
-            className={`px-4 py-2 font-mono text-xs uppercase border transition-all ${
+            className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all ${
               tab === 'projects'
                 ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399] font-bold shadow-[0_0_12px_rgba(0,200,83,0.2)]'
                 : 'border-white/10 text-[#8A93A6] hover:text-white'
             }`}
           >
-            01 / Витрина проектов ({projects.length})
+            01 / Проекты и Наставники ({projects.length})
           </button>
+
+          {isTeacher && (
+            <button
+              onClick={() => setTab('mentor_lab')}
+              className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all flex items-center gap-1.5 ${
+                tab === 'mentor_lab'
+                  ? 'border-[#22D3EE] bg-[#22D3EE]/15 text-[#22D3EE] font-bold shadow-[0_0_12px_rgba(34,211,238,0.2)]'
+                  : 'border-white/10 text-[#8A93A6] hover:text-white'
+              }`}
+            >
+              <Users size={13} /> Мастерская Наставника
+            </button>
+          )}
+
+          {isJury && (
+            <button
+              onClick={() => setTab('jury_audit')}
+              className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all flex items-center gap-1.5 ${
+                tab === 'jury_audit'
+                  ? 'border-[#FFAA00] bg-[#FFAA00]/15 text-[#FFAA00] font-bold shadow-[0_0_12px_rgba(255,170,0,0.2)]'
+                  : 'border-white/10 text-[#8A93A6] hover:text-white'
+              }`}
+            >
+              <Award size={13} /> Аудит Жюри
+            </button>
+          )}
+
           <button
             onClick={() => setTab('pitch_sim')}
-            className={`px-4 py-2 font-mono text-xs uppercase border transition-all ${
+            className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all ${
               tab === 'pitch_sim'
-                ? 'border-[#FFAA00] bg-[#FFAA00]/15 text-[#FFAA00] font-bold'
+                ? 'border-purple-400 bg-purple-500/15 text-purple-300 font-bold'
                 : 'border-white/10 text-[#8A93A6] hover:text-white'
             }`}
           >
-            02 / Тренажёр защиты (4 шага)
+            Тренажёр защиты
           </button>
+
           <button
             onClick={() => setTab('map')}
-            className={`px-4 py-2 font-mono text-xs uppercase border transition-all ${
+            className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all ${
               tab === 'map'
-                ? 'border-[#22D3EE] bg-[#22D3EE]/15 text-[#22D3EE] font-bold'
+                ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399] font-bold'
                 : 'border-white/10 text-[#8A93A6] hover:text-white'
             }`}
           >
-            03 / Яндекс.Карта ХМАО
+            Яндекс.Карта ХМАО
           </button>
         </div>
       </div>
 
-      {/* ТАБ 1: ПРОЕКТЫ */}
+      {/* ВКЛАДКА 1: ВИТРИНА ПРОЕКТОВ + ВЫБОР НАСТАВНИКА */}
       {tab === 'projects' && (
         <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 border border-white/10 bg-[#060a14]/60">
-            <div className="text-xs text-zinc-300">
-              Статусы регламента: <span className="text-[#FFAA00] font-mono">На рассмотрении комиссии → Назначена дата защиты → Защищён успешно → Одобрен</span>
-            </div>
-            <Button variant="gold" size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5 shrink-0">
-              <FolderPlus size={14} /> Подать проект на защиту
-            </Button>
-          </div>
+          {/* Блок выбора наставника для исследователя */}
+          <Card className="p-5 border-[#22D3EE]/30 bg-gradient-to-r from-[#060a14] via-[#071923] to-[#060a14]">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
+                  <UserCheck size={15} /> Научное кураторство и привязка наставника
+                </div>
+                <p className="text-xs text-zinc-300">
+                  {currentMentorObj
+                    ? `Ваш текущий наставник: ${currentMentorObj.full_name} (${currentMentorObj.username}). Он курирует ваши проекты.`
+                    : 'Выберите наставника из списка преподавателей, чтобы он помогал дорабатывать проекты и допускал их к защите.'}
+                </p>
+              </div>
 
+              <div className="flex flex-wrap items-center gap-2">
+                {mentorsList.map((m) => {
+                  const isMyMentor = profile?.mentor_id === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => bindMentorMutation.mutate(m.id)}
+                      className={`px-3 py-2 rounded border font-mono text-xs flex items-center gap-2 transition-all ${
+                        isMyMentor
+                          ? 'border-[#22D3EE] bg-[#22D3EE]/20 text-white font-bold'
+                          : 'border-white/15 bg-[#050810] text-zinc-300 hover:border-[#22D3EE]'
+                      }`}
+                    >
+                      <span>{m.username}</span>
+                      <span className="text-[10px] text-[#34D399]">{isMyMentor ? '✓ Ваш куратор' : 'Выбрать'}</span>
+                    </button>
+                  );
+                })}
+                <Button variant="gold" size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5 ml-auto">
+                  <FolderPlus size={14} /> Подать проект на защиту
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          {/* Карточки проектов */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             {projects.map((p) => {
               const hideAuthor = p.blind_mode && p.status !== 'approved' && p.status !== 'defended';
               const st = STATUS_RU[p.status] || { label: p.status, color: 'zinc' };
 
               return (
-                <Card key={p.id} className="p-6 flex flex-col justify-between space-y-4 border-white/10 bg-[#060a14]/90 hover:border-[#00C853]/50 transition-all shadow-xl">
+                <Card
+                  key={p.id}
+                  className="p-6 flex flex-col justify-between space-y-4 border-white/10 bg-[#060a14]/90 hover:border-[#00C853]/50 transition-all shadow-xl"
+                >
                   <div className="space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <Badge color={st.color}>
-                        Статус: {st.label}
-                      </Badge>
+                      <Badge color={st.color}>{st.label}</Badge>
                       {p.blind_mode && (
                         <Badge color="purple">
-                          <EyeOff size={11} className="mr-1" /> Режим «Слепой защиты»
+                          <EyeOff size={11} className="mr-1" /> Слепая защита
                         </Badge>
                       )}
                     </div>
@@ -272,19 +481,29 @@ export default function ActivitiesPage() {
                     <h3 className="text-lg font-medium text-white">{p.title}</h3>
                     <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">{p.description}</p>
 
-                    <div className="p-3 bg-[#050810] border border-white/10 space-y-1.5">
-                      <div className="text-[11px] font-mono text-[#34D399]">
-                        Целевой эффект разработки: <strong>{p.impact_metric}</strong>
+                    <div className="p-3 rounded-lg bg-[#050810] border border-white/10 space-y-1.5">
+                      <div className="text-xs font-mono text-[#34D399]">
+                        Целевой эффект: <strong>{p.impact_metric}</strong>
                       </div>
+                      {p.mentorProfile && (
+                        <div className="text-[11px] font-mono text-[#22D3EE]">
+                          Куратор проекта: <strong>{p.mentorProfile.full_name} ({p.mentorProfile.username})</strong>
+                        </div>
+                      )}
                       {p.pitch_at && (
-                        <div className="font-mono text-[11px] text-[#22D3EE] flex items-center justify-between pt-1 border-t border-white/5">
+                        <div className="font-mono text-[11px] text-[#FFAA00] flex items-center justify-between pt-1 border-t border-white/5">
                           <span>
                             <Calendar size={12} className="inline mr-1" />
                             Защита: {new Date(p.pitch_at).toLocaleString()}
                           </span>
                           {p.call_link && (
-                            <a href={p.call_link} target="_blank" rel="noreferrer" className="underline flex items-center gap-1 hover:text-white">
-                              <Video size={12} /> Созвон
+                            <a
+                              href={p.call_link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline flex items-center gap-1 hover:text-white"
+                            >
+                              <Video size={12} /> Видеозвонок
                             </a>
                           )}
                         </div>
@@ -292,14 +511,17 @@ export default function ActivitiesPage() {
                     </div>
                   </div>
 
-                  <div className="pt-3 border-t border-white/10 flex items-center justify-between text-xs font-mono">
+                  <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
                     <span className="text-[#8A93A6]">
-                      Автор: <strong className="text-white">{hideAuthor ? '🔒 Скрыт до оглашения оценки' : p.authorProfile?.username || '@исследователь'}</strong>
+                      Автор:{' '}
+                      <strong className="text-white">
+                        {hideAuthor ? '🔒 Скрыт до вердикта жюри' : p.authorProfile?.username || '@исследователь'}
+                      </strong>
                     </span>
 
                     <div className="flex items-center gap-2">
-                      {p.avgWeighted && <Badge color="emerald">Балл жюри: {p.avgWeighted} / 100</Badge>}
-                      {isJuryOrAdmin && (
+                      {p.avgWeighted && <Badge color="emerald">Рейтинг жюри: {p.avgWeighted} / 100</Badge>}
+                      {isJury && (
                         <Button size="sm" variant="outline" onClick={() => setSelectedProj(p)}>
                           Оценить (Жюри)
                         </Button>
@@ -313,20 +535,168 @@ export default function ActivitiesPage() {
         </div>
       )}
 
-      {/* ТАБ 2: ТРЕНАЖЁР */}
+      {/* ВКЛАДКА 2: САМОБЫТНАЯ АКТИВНОСТЬ НАСТАВНИКА — «ИНЖЕНЕРНАЯ МАСТЕРСКАЯ» */}
+      {tab === 'mentor_lab' && isTeacher && (
+        <div className="space-y-6">
+          <Card className="p-6 border-[#22D3EE]/40 bg-gradient-to-r from-[#060a14] via-[#092230] to-[#050810]">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <Badge color="cyan">Ролевая активность Наставника (+50 XP за рецензию)</Badge>
+                <h2 className="text-xl font-medium text-white mt-1">
+                  Инженерная мастерская и кураторство проектов
+                </h2>
+                <p className="text-xs text-zinc-300">
+                  Проверяйте работы своих учеников и других участников, оставляйте методические указания и выдавайте допуск к защите перед жюри.
+                </p>
+              </div>
+              <div className="font-mono text-xs text-[#22D3EE] border border-[#22D3EE]/30 bg-[#050810] px-4 py-2.5 rounded">
+                Привязанных учеников: <strong>{myMentees.length}</strong>
+              </div>
+            </div>
+          </Card>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Список подопечных */}
+            <Card className="lg:col-span-4 p-5 space-y-4 border-white/10 bg-[#060a14]">
+              <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
+                <Users size={15} /> Мои подопечные ({myMentees.length})
+              </div>
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {myMentees.length === 0 ? (
+                  <div className="text-xs text-[#8A93A6] py-6 text-center font-mono">
+                    Пока никто не выбрал вас наставником. Ученики могут нажать на ваш ник во вкладке Проектов или в Профиле.
+                  </div>
+                ) : (
+                  myMentees.map((st) => (
+                    <div key={st.id} className="p-3 rounded border border-white/10 bg-[#050810] flex items-center justify-between">
+                      <div>
+                        <div className="text-xs font-medium text-white">{st.full_name}</div>
+                        <div className="font-mono text-[11px] text-[#FFAA00]">{st.username}</div>
+                      </div>
+                      <Badge color="emerald">{st.xp || 100} XP</Badge>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+
+            {/* Проекты для кураторской проверки */}
+            <Card className="lg:col-span-8 p-5 space-y-4 border-white/10 bg-[#060a14]">
+              <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center gap-2">
+                <BookOpen size={15} /> Проекты, ожидающие кураторского допуска
+              </div>
+
+              <div className="space-y-4">
+                {projects.map((pr) => (
+                  <div key={pr.id} className="p-4 rounded-lg border border-white/10 bg-[#050810] space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-medium text-white">{pr.title}</h3>
+                        <div className="text-[11px] font-mono text-[#8A93A6]">
+                          Автор: <span className="text-[#FFAA00]">{pr.authorProfile?.username}</span> • Статус:{' '}
+                          <span className="text-[#34D399]">{STATUS_RU[pr.status]?.label || pr.status}</span>
+                        </div>
+                      </div>
+                      {pr.mentor_id === user?.id && <Badge color="cyan">Вы куратор</Badge>}
+                    </div>
+
+                    <p className="text-xs text-zinc-300">{pr.description}</p>
+
+                    <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                      <input
+                        type="text"
+                        value={mentorNotes[pr.id] || ''}
+                        onChange={(e) => setMentorNotes({ ...mentorNotes, [pr.id]: e.target.value })}
+                        placeholder="Методическая рекомендация ученику (необязательно)..."
+                        className="flex-1 bg-[#030509] border border-white/15 rounded px-3 py-2 text-xs text-white"
+                      />
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => mentorCurateMutation.mutate({ proj: pr, newStatus: 'scheduled' })}
+                      >
+                        <ShieldCheck size={14} /> Допустить к защите (+50 XP)
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => mentorCurateMutation.mutate({ proj: pr, newStatus: 'revision' })}
+                      >
+                        <RotateCcw size={14} /> На доработку
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {/* ВКЛАДКА 3: САМОБЫТНАЯ АКТИВНОСТЬ ЖЮРИ — «ЗАКРЫТЫЙ НЕФТЯНОЙ АУДИТ» */}
+      {tab === 'jury_audit' && isJury && (
+        <div className="space-y-6">
+          <Card className="p-6 border-[#FFAA00]/40 bg-gradient-to-r from-[#060a14] via-[#211705] to-[#050810]">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <Badge color="gold">Ролевая активность Эксперта Жюри (+75 XP за вердикт)</Badge>
+                <h2 className="text-xl font-medium text-white mt-1">
+                  Пульт Жюри: Закрытый нефтяной аудит и слепая экспертиза
+                </h2>
+                <p className="text-xs text-zinc-300">
+                  Оценивайте инженерные проекты по 4 взвешенным критериям ХМАО-Югры. Ваш вердикт формирует официальный рейтинг проекта.
+                </p>
+              </div>
+              <Badge color="purple">
+                <EyeOff size={12} className="mr-1" /> Протокол объективности активен
+              </Badge>
+            </div>
+          </Card>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {projects.map((p) => (
+              <Card key={p.id} className="p-5 border-white/10 bg-[#060a14] flex flex-col justify-between space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Badge color={STATUS_RU[p.status]?.color || 'gold'}>
+                      {STATUS_RU[p.status]?.label || p.status}
+                    </Badge>
+                    <span className="font-mono text-xs text-[#34D399]">
+                      Эффект: {p.impact_metric}
+                    </span>
+                  </div>
+                  <h3 className="text-base font-medium text-white">{p.title}</h3>
+                  <p className="text-xs text-zinc-300">{p.description}</p>
+                </div>
+
+                <div className="pt-3 border-t border-white/10 flex items-center justify-between">
+                  <span className="font-mono text-xs text-[#8A93A6]">
+                    Рецензий жюри: <strong className="text-white">{p.reviews?.length || 0}</strong>
+                  </span>
+                  <Button size="sm" variant="gold" onClick={() => setSelectedProj(p)}>
+                    <Sliders size={13} /> Выставить баллы аудита
+                  </Button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ВКЛАДКА 4: ТРЕНАЖЁР ЗАЩИТЫ */}
       {tab === 'pitch_sim' && (
-        <Card className="p-8 max-w-2xl mx-auto space-y-6 border-[#FFAA00]/40 bg-[#060a14]/90 shadow-2xl">
+        <Card className="p-8 max-w-2xl mx-auto space-y-6 border-[#FFAA00]/40 bg-[#060a14]/95 shadow-2xl">
           <div className="flex items-center justify-between">
             <Badge color="gold">{PITCH_SIM_STEPS[simStep].title}</Badge>
             <button
               onClick={() => {
                 setSimStep(0);
                 setSimFeedback(null);
-                toast('Тренажёр пройден! +120 XP', 'success');
+                toast('Тренажёр защиты пройден! +120 XP', 'success');
               }}
               className="font-mono text-[10px] uppercase text-[#8A93A6] hover:text-white flex items-center gap-1"
             >
-              <FastForward size={12} /> Пропустить
+              <FastForward size={12} /> Завершить досрочно
             </button>
           </div>
 
@@ -337,7 +707,7 @@ export default function ActivitiesPage() {
               <button
                 key={i}
                 onClick={() => setSimFeedback(o)}
-                className="w-full min-h-[56px] p-4 border border-white/15 bg-[#050810] hover:border-[#FFAA00] text-left text-sm text-white transition-all"
+                className="w-full min-h-[56px] p-4 rounded-lg border border-white/15 bg-[#050810] hover:border-[#FFAA00] text-left text-sm text-white transition-all"
               >
                 {o.label}
               </button>
@@ -346,16 +716,22 @@ export default function ActivitiesPage() {
 
           {simFeedback && (
             <div className="space-y-4">
-              <div className={`p-4 border text-sm ${simFeedback.ok ? 'border-[#00C853] text-[#34D399] bg-[#00C853]/10' : 'border-red-500 text-red-300 bg-red-500/10'}`}>
+              <div
+                className={`p-4 rounded-lg border text-sm ${
+                  simFeedback.ok
+                    ? 'border-[#00C853] text-[#34D399] bg-[#00C853]/10'
+                    : 'border-red-500 text-red-300 bg-red-500/10'
+                }`}
+              >
                 {simFeedback.msg}
               </div>
-              <div className="p-3 bg-[#FFAA00]/10 border border-[#FFAA00]/30 text-xs text-zinc-200">
-                💡 <strong className="text-[#FFAA00]">Знаете ли вы?</strong> {PITCH_SIM_STEPS[simStep].fact}
+              <div className="p-3 rounded-lg bg-[#FFAA00]/10 border border-[#FFAA00]/30 text-xs text-zinc-200">
+                💡 <strong className="text-[#FFAA00]">Факт регламента:</strong> {PITCH_SIM_STEPS[simStep].fact}
               </div>
               {simFeedback.ok && (
                 <Button
                   variant="gold"
-                  className="w-full"
+                  className="w-full justify-center"
                   onClick={() => {
                     if (simStep < PITCH_SIM_STEPS.length - 1) {
                       setSimStep((s) => s + 1);
@@ -363,11 +739,13 @@ export default function ActivitiesPage() {
                     } else {
                       setSimStep(0);
                       setSimFeedback(null);
-                      toast('Вы успешно прошли тренажёр защиты перед виртуальным жюри! +120 XP', 'success');
+                      toast('Вы блестяще прошли тренажёр защиты! +120 XP', 'success');
                     }
                   }}
                 >
-                  {simStep < PITCH_SIM_STEPS.length - 1 ? 'Следующий шаг выступления →' : 'Завершить защиту проекта (+120 XP)'}
+                  {simStep < PITCH_SIM_STEPS.length - 1
+                    ? 'Следующий этап питча →'
+                    : 'Получить сертификат готовности (+120 XP)'}
                 </Button>
               )}
             </div>
@@ -375,25 +753,45 @@ export default function ActivitiesPage() {
         </Card>
       )}
 
+      {/* ВКЛАДКА 5: КАРТА ХМАО */}
       {tab === 'map' && <HmaoEcoMap />}
 
-      {/* Модальное окно подачи проекта */}
-      <Modal isOpen={createOpen} onClose={() => setCreateOpen(false)} title="Подать проект на защиту">
+      {/* МОДАЛКА СОЗДАНИЯ ПРОЕКТА */}
+      <Modal isOpen={createOpen} onClose={() => setCreateOpen(false)} title="Подать инженерный проект на защиту">
         <form onSubmit={(e) => createProjectMutation.mutate(e)} className="space-y-4">
           <Input
             label="Название проекта / разработки"
-            placeholder="Например: Цифровая экосистема «Югра.Нефть»"
+            placeholder="Например: Биоремедиация нефтезагрязнённых торфяников Югры"
             value={projForm.title}
             onChange={(e) => setProjForm({ ...projForm, title: e.target.value })}
             required
           />
           <Input
             label="Целевой измеримый эффект"
-            placeholder="Например: Снижение выбросов парниковых газов на 30%"
+            placeholder="Например: Снижение выбросов CO₂ на 35%"
             value={projForm.impact_metric}
             onChange={(e) => setProjForm({ ...projForm, impact_metric: e.target.value })}
             required
           />
+
+          <div>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">
+              Выберите научного наставника (куратора)
+            </label>
+            <select
+              value={projForm.mentor_id}
+              onChange={(e) => setProjForm({ ...projForm, mentor_id: e.target.value })}
+              className="w-full bg-[#050810] border border-white/15 p-2.5 text-xs text-white rounded"
+            >
+              <option value="">— Без куратора (прямая подача) —</option>
+              {mentorsList.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.full_name} ({m.username})
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Желаемая дата защиты"
@@ -402,48 +800,57 @@ export default function ActivitiesPage() {
               onChange={(e) => setProjForm({ ...projForm, pitch_at: e.target.value })}
             />
             <Input
-              label="Ссылка на видеоконференцию (созвон)"
+              label="Ссылка на видеозвонок"
               placeholder="https://telemost.yandex.ru/..."
               value={projForm.call_link}
               onChange={(e) => setProjForm({ ...projForm, call_link: e.target.value })}
             />
           </div>
+
           <div>
             <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">
-              Краткое описание разработки и план реализации
+              Описание проблемы и предлагаемого решения
             </label>
             <textarea
               rows={4}
               value={projForm.description}
               onChange={(e) => setProjForm({ ...projForm, description: e.target.value })}
-              placeholder="Опишите суть инновации, проблему в ХМАО и ожидаемые результаты..."
-              className="w-full bg-[#050810] border border-white/10 p-3 text-xs text-white focus:outline-none focus:border-[#00C853]"
+              placeholder="Опишите суть разработки, этапы внедрения и пользу для ХМАО..."
+              className="w-full bg-[#050810] border border-white/15 p-3 text-xs text-white rounded focus:outline-none focus:border-[#00C853]"
               required
             />
           </div>
-          <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer pt-1">
+
+          <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
             <input
               type="checkbox"
               checked={projForm.blind_mode}
               onChange={(e) => setProjForm({ ...projForm, blind_mode: e.target.checked })}
               className="accent-[#FFAA00]"
             />
-            <span>🕶️ Включить режим «Слепой защиты» (жюри не видит автора проекта до оглашения баллов)</span>
+            <span>🕶️ Включить режим «Слепой защиты» (жюри не видит автора до выставления оценок)</span>
           </label>
-          <Button type="submit" variant="gold" className="w-full">Отправить проект на рассмотрение (+75 XP)</Button>
+
+          <Button type="submit" variant="gold" className="w-full justify-center">
+            Отправить проект на рассмотрение (+75 XP)
+          </Button>
         </form>
       </Modal>
 
-      {/* Оценка эксперта жюри */}
-      <Modal isOpen={Boolean(selectedProj)} onClose={() => setSelectedProj(null)} title={`Экспертная оценка: ${selectedProj?.title}`}>
+      {/* МОДАЛКА ОЦЕНКИ ПРОЕКТА ДЛЯ ЖЮРИ */}
+      <Modal
+        isOpen={Boolean(selectedProj)}
+        onClose={() => setSelectedProj(null)}
+        title={`Экспертный лист Жюри: ${selectedProj?.title || ''}`}
+      >
         <div className="space-y-4 text-xs">
           {[
-            { key: 'science', label: 'Научность и обоснованность (Вес 30%) — от 1 до 10' },
-            { key: 'relevance', label: 'Актуальность для региона ХМАО (Вес 25%) — от 1 до 10' },
-            { key: 'feasibility', label: 'Практическая реализуемость (Вес 25%) — от 1 до 10' },
-            { key: 'pitch', label: 'Качество доклада и защиты (Вес 20%) — от 1 до 10' }
+            { key: 'science', label: '1. Научно-техническая новизна (Вес 30%) — от 1 до 10' },
+            { key: 'relevance', label: '2. Актуальность для промыслов ХМАО (Вес 25%) — от 1 до 10' },
+            { key: 'feasibility', label: '3. Экономическая и инженерная реализуемость (Вес 25%) — от 1 до 10' },
+            { key: 'pitch', label: '4. Качество презентации и ответов (Вес 20%) — от 1 до 10' }
           ].map((crit) => (
-            <div key={crit.key} className="flex items-center justify-between">
+            <div key={crit.key} className="flex items-center justify-between gap-2">
               <span className="text-zinc-300">{crit.label}</span>
               <input
                 type="number"
@@ -451,19 +858,39 @@ export default function ActivitiesPage() {
                 max="10"
                 value={scores[crit.key]}
                 onChange={(e) => setScores({ ...scores, [crit.key]: e.target.value })}
-                className="w-16 bg-[#050810] border border-white/15 px-2 py-1 text-center font-mono text-white"
+                className="w-16 bg-[#050810] border border-white/20 rounded px-2 py-1 text-center font-mono text-white"
               />
             </div>
           ))}
+
+          <div>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">
+              Итоговое решение эксперта
+            </label>
+            <select
+              value={scores.decision}
+              onChange={(e) => setScores({ ...scores, decision: e.target.value })}
+              className="w-full bg-[#050810] border border-white/20 rounded p-2 text-xs text-white"
+            >
+              <option value="approved">✅ Поддержать и рекомендовать к внедрению</option>
+              <option value="revision">🔄 Отправить на доработку с замечаниями</option>
+            </select>
+          </div>
+
           <textarea
             rows={3}
             value={scores.comment}
             onChange={(e) => setScores({ ...scores, comment: e.target.value })}
-            placeholder="Заключение комиссии и рекомендации участнику..."
-            className="w-full bg-[#050810] border border-white/10 p-3 text-xs text-white"
+            placeholder="Экспертное заключение и рекомендации автору проекта..."
+            className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
           />
-          <Button onClick={() => submitJuryReviewMutation.mutate(selectedProj)} className="w-full">
-            Утвердить оценку комиссии
+
+          <Button
+            variant="gold"
+            onClick={() => submitJuryReviewMutation.mutate(selectedProj)}
+            className="w-full justify-center"
+          >
+            Утвердить экспертный протокол (+75 XP)
           </Button>
         </div>
       </Modal>

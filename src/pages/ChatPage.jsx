@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, checkRateLimit, uploadFileToStorage } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { Card, Button, Avatar, Badge, Modal, useToast } from '../components/ui/DesignSystem';
+import { getHighestRole, ROLE_ID_MAP } from '../utils/roleUtils';
 import {
   Send,
   Paperclip,
@@ -21,7 +22,12 @@ import {
   Hash,
   MessageSquare,
   Sparkles,
-  Users
+  Flag,
+  ShieldAlert,
+  Ban,
+  FileText,
+  ExternalLink,
+  X
 } from 'lucide-react';
 
 const EMOJIS = ['👍', '❤️', '🔥', '🌲', '💡', '🎉'];
@@ -31,15 +37,24 @@ const DEFAULT_CHATS = [
   { id: 'bbbb2222-2222-2222-2222-222222222222', type: 'support', title: 'Вопросы экспертам жюри' }
 ];
 
+const REPORT_REASONS = [
+  'Спам, реклама или флуд в канале',
+  'Оскорбления участников или токсичное поведение',
+  'Публикация недостоверных расчётов / плагиат проекта',
+  'Нарушение правил безопасности платформы'
+];
+
 export default function ChatPage() {
-  const { user, profile, setUnreadChatCount } = useAuth();
+  const { user, profile, hasRole, setUnreadChatCount } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
+  const isAdmin = hasRole(['admin', 'dev']);
+
   const [activeChatId, setActiveChatId] = useState(
-    searchParams.get('room') || 'aaaa1111-1111-1111-1111-111111111111'
+    searchParams.get('room') || DEFAULT_CHATS[0].id
   );
   const [text, setText] = useState('');
   const [replyTo, setReplyTo] = useState(null);
@@ -47,27 +62,68 @@ export default function ChatPage() {
   const [msgSearch, setMsgSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [showArchived, setShowArchived] = useState(false);
-  const [archivedIds, setArchivedIds] = useState([]);
-  const [mutedIds, setMutedIds] = useState([]);
+  const [archivedIds, setArchivedIds] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ugra_archived_chats') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const [mutedIds, setMutedIds] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ugra_muted_chats') || '[]');
+    } catch {
+      return [];
+    }
+  });
   const [reactionMenuMsgId, setReactionMenuMsgId] = useState(null);
 
+  // Состояния для системы жалоб
+  const [reportTarget, setReportTarget] = useState(null); // { userObj, messageObj }
+  const [reportCategory, setReportCategory] = useState(REPORT_REASONS[0]);
+  const [reportComment, setReportComment] = useState('');
+
+  // Онлайн и индикатор печати
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUser, setTypingUser] = useState(null);
   const [newChatModal, setNewChatModal] = useState(false);
   const [newChatTitle, setNewChatTitle] = useState('');
 
   const bottomRef = useRef(null);
+  const channelRef = useRef(null);
 
   useEffect(() => {
     if (setUnreadChatCount) setUnreadChatCount(0);
   }, [setUnreadChatCount]);
 
-  // Загрузка комнат
+  // Сохранение архива и мута в localStorage
+  const toggleArchiveChat = (chatId, e) => {
+    e?.stopPropagation();
+    setArchivedIds((prev) => {
+      const next = prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [...prev, chatId];
+      localStorage.setItem('ugra_archived_chats', JSON.stringify(next));
+      return next;
+    });
+    toast('Статус архивации канала обновлён', 'info');
+  };
+
+  const toggleMuteChat = (chatId) => {
+    setMutedIds((prev) => {
+      const next = prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [...prev, chatId];
+      localStorage.setItem('ugra_muted_chats', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // 1. Загрузка списка комнат
   const { data: chats = DEFAULT_CHATS } = useQuery({
-    queryKey: ['chats_list_v5', user?.id],
+    queryKey: ['chats_list_v8', user?.id],
     queryFn: async () => {
       try {
-        const { data, error } = await supabase.from('chats').select('*').order('created_at', { ascending: true });
+        const { data, error } = await supabase
+          .from('chats')
+          .select('*')
+          .order('created_at', { ascending: true });
         if (error || !data || data.length === 0) return DEFAULT_CHATS;
         return data.filter((c) => !c.deleted_at);
       } catch {
@@ -76,12 +132,31 @@ export default function ChatPage() {
     }
   });
 
-  // Загрузка списка участников (для ЛС и профилей авторов)
+  // 2. Загрузка профилей вместе с их ролями из user_roles
   const { data: allProfiles = [] } = useQuery({
-    queryKey: ['chat_all_profiles'],
+    queryKey: ['chat_all_profiles_with_roles_v8'],
     queryFn: async () => {
-      const { data } = await supabase.from('profiles').select('id, username, full_name, avatar_url, status');
-      return data || [];
+      const [profRes, urRes] = await Promise.all([
+        supabase.from('profiles').select('id, username, full_name, avatar_url, status, xp, is_banned, mentor_id'),
+        supabase.from('user_roles').select('user_id, role_id')
+      ]);
+
+      const roleMap = {};
+      (urRes.data || []).forEach((ur) => {
+        if (!roleMap[ur.user_id]) roleMap[ur.user_id] = [];
+        const rName = ROLE_ID_MAP[ur.role_id] || 'student';
+        roleMap[ur.user_id].push(rName);
+      });
+
+      return (profRes.data || []).map((p) => {
+        const userRoles = roleMap[p.id] || ['student'];
+        const highestRole = getHighestRole(userRoles, p.username);
+        return {
+          ...p,
+          roles: userRoles,
+          highestRole
+        };
+      });
     }
   });
 
@@ -89,9 +164,9 @@ export default function ChatPage() {
     return Object.fromEntries(allProfiles.map((p) => [p.id, p]));
   }, [allProfiles]);
 
-  // Загрузка сообщений БЕЗ ломающегося JOIN
+  // 3. Загрузка сообщений активного чата
   const { data: rawMessages = [] } = useQuery({
-    queryKey: ['chat_messages_v5', activeChatId],
+    queryKey: ['chat_messages_v8', activeChatId],
     enabled: Boolean(activeChatId),
     queryFn: async () => {
       try {
@@ -110,7 +185,7 @@ export default function ChatPage() {
     }
   });
 
-  // Realtime
+  // 4. Realtime подписка на сообщения, онлайн и печать
   useEffect(() => {
     if (!activeChatId) return;
 
@@ -121,7 +196,7 @@ export default function ChatPage() {
 
     channel
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => {
-        queryClient.invalidateQueries({ queryKey: ['chat_messages_v5', activeChatId] });
+        queryClient.invalidateQueries({ queryKey: ['chat_messages_v8', activeChatId] });
       })
       .on('presence', { event: 'sync' }, () => {
         setOnlineUsers(Object.keys(channel.presenceState() || {}));
@@ -138,6 +213,7 @@ export default function ChatPage() {
         }
       });
 
+    channelRef.current = channel;
     return () => {
       supabase.removeChannel(channel);
     };
@@ -145,10 +221,25 @@ export default function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [rawMessages]);
+  }, [rawMessages.length, activeChatId]);
 
+  const handleTypingInput = (val) => {
+    setText(val);
+    if (channelRef.current && profile?.username) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { username: profile.username }
+      });
+    }
+  };
+
+  // Отправка и редактирование сообщения
   const sendMutation = useMutation({
     mutationFn: async ({ isEdit, content, editId }) => {
+      if (profile?.is_banned) {
+        throw new Error('Ваш аккаунт ограничен модератором. Отправка сообщений недоступна.');
+      }
       if (isEdit) {
         const { error } = await supabase
           .from('chat_messages')
@@ -168,7 +259,7 @@ export default function ChatPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v5', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v8', activeChatId] });
       setText('');
       setEditingMsg(null);
       setReplyTo(null);
@@ -187,6 +278,7 @@ export default function ChatPage() {
     });
   };
 
+  // Удаление сообщения (своего или любого для админа)
   const deleteMsgMutation = useMutation({
     mutationFn: async (msgId) => {
       const { error } = await supabase
@@ -196,12 +288,58 @@ export default function ChatPage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v5', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v8', activeChatId] });
       toast('Сообщение удалено', 'info');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
+  // Быстрый бан нарушителя прямо из чата (для Админа)
+  const quickBanMutation = useMutation({
+    mutationFn: async (targetUser) => {
+      const nextBan = !targetUser.is_banned;
+      const { error } = await supabase
+        .from('profiles')
+        .update({ is_banned: nextBan })
+        .eq('id', targetUser.id);
+      if (error) throw error;
+      return nextBan;
+    },
+    onSuccess: (nextBan) => {
+      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v8'] });
+      toast(nextBan ? 'Пользователь заблокирован в чате' : 'Блокировка снята', 'info');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // Отправка жалобы в таблицу reports
+  const submitReportMutation = useMutation({
+    mutationFn: async (e) => {
+      e.preventDefault();
+      if (!reportTarget?.userObj?.id) throw new Error('Не выбран нарушитель');
+      const fullReason = `[${reportCategory}] ${reportComment.trim()}${
+        reportTarget.messageObj ? ` | Сообщение: "${reportTarget.messageObj.content?.slice(0, 120)}"` : ''
+      }`;
+
+      const { error } = await supabase.from('reports').insert([
+        {
+          reporter_id: user.id,
+          target_id: reportTarget.userObj.id,
+          reason: fullReason,
+          status: 'pending'
+        }
+      ]);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      setReportTarget(null);
+      setReportComment('');
+      toast('Жалоба передана в Терминал Администратора!', 'success');
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // Реакции на сообщения
   const toggleReaction = async (msg, emoji) => {
     const current = msg.reactions || {};
     const usersForEmoji = current[emoji] || [];
@@ -214,15 +352,17 @@ export default function ChatPage() {
     setReactionMenuMsgId(null);
 
     await supabase.from('chat_messages').update({ reactions: updated }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v5', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v8', activeChatId] });
   };
 
+  // Закрепление сообщения
   const togglePinMessage = async (msg) => {
     await supabase.from('chat_messages').update({ is_pinned: !msg.is_pinned }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v5', activeChatId] });
-    toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Закреплено в шапке чата', 'info');
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v8', activeChatId] });
+    toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Закреплено в шапке канала', 'info');
   };
 
+  // Загрузка файла в чат
   const handleFileAttach = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !user?.id) return;
@@ -233,12 +373,12 @@ export default function ChatPage() {
         {
           chat_id: activeChatId,
           author_id: user.id,
-          content: `Прикреплён файл: ${file.name}`,
+          content: `Прикреплён документ: ${file.name}`,
           attachments: [{ name: file.name, url, type: file.type }]
         }
       ]);
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v5', activeChatId] });
-      toast('Файл отправлен!', 'success');
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v8', activeChatId] });
+      toast('Файл успешно отправлен!', 'success');
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -255,16 +395,17 @@ export default function ChatPage() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
-      {/* ЛЕВАЯ КОЛОНКА КАНАЛОВ И ДИАЛОГОВ */}
-      <Card className="lg:col-span-4 flex flex-col justify-between space-y-4 border-white/10 bg-[#060a14]/90 backdrop-blur-2xl shadow-[0_15px_35px_rgba(0,0,0,0.6)]">
+      {/* ЛЕВАЯ КОЛОНКА: КАНАЛЫ И ЛИЧНЫЕ СООБЩЕНИЯ */}
+      <Card className="lg:col-span-4 flex flex-col justify-between space-y-5 border-white/10 bg-[#060a14]/95 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.7)] p-5">
         <div className="space-y-4">
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
+          {/* Переключатель Каналы / Архив + Кнопка Создать */}
+          <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
             <div className="flex gap-1.5">
               <button
                 onClick={() => setShowArchived(false)}
-                className={`font-mono text-[10px] uppercase px-3 py-1.5 border transition-all ${
+                className={`font-mono text-[11px] uppercase px-3 py-1.5 rounded border transition-all ${
                   !showArchived
-                    ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399] font-bold shadow-[0_0_10px_rgba(0,200,83,0.2)]'
+                    ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399] font-bold shadow-[0_0_12px_rgba(0,200,83,0.2)]'
                     : 'border-white/10 text-[#8A93A6] hover:text-white'
                 }`}
               >
@@ -272,70 +413,87 @@ export default function ChatPage() {
               </button>
               <button
                 onClick={() => setShowArchived(true)}
-                className={`font-mono text-[10px] uppercase px-3 py-1.5 border flex items-center gap-1 transition-all ${
+                className={`font-mono text-[11px] uppercase px-3 py-1.5 rounded border flex items-center gap-1.5 transition-all ${
                   showArchived
                     ? 'border-[#FFAA00] bg-[#FFAA00]/15 text-[#FFAA00] font-bold'
                     : 'border-white/10 text-[#8A93A6] hover:text-white'
                 }`}
               >
-                <Archive size={11} /> Архив ({archivedIds.length})
+                <Archive size={12} /> Архив ({archivedIds.length})
               </button>
             </div>
 
-            <Button size="sm" variant="gold" onClick={() => setNewChatModal(true)} className="px-2.5 py-1">
+            <Button size="sm" variant="gold" onClick={() => setNewChatModal(true)} className="px-3 py-1.5 rounded">
               <Plus size={13} /> Создать
             </Button>
           </div>
 
-          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-            {visibleChats.map((ch) => {
-              const isSelected = activeChatId === ch.id;
-              return (
-                <div
-                  key={ch.id}
-                  onClick={() => setActiveChatId(ch.id)}
-                  className={`p-3 border transition-all flex items-center justify-between cursor-pointer group ${
-                    isSelected
-                      ? 'border-[#00C853] bg-gradient-to-r from-[#00C853]/20 to-transparent text-white shadow-[inset_3px_0_0_#00C853]'
-                      : 'border-white/5 bg-[#050810]/70 text-zinc-300 hover:border-white/20 hover:text-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    {ch.type === 'direct' ? (
-                      <MessageSquare size={13} className="text-[#22D3EE] shrink-0" />
-                    ) : (
-                      <Hash size={13} className="text-[#00C853] shrink-0" />
-                    )}
-                    <span className="font-mono text-xs truncate">
-                      {mutedIds.includes(ch.id) && '🔇 '}
-                      {ch.title}
-                    </span>
+          {/* Список каналов */}
+          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+            {visibleChats.length === 0 ? (
+              <div className="text-xs text-[#8A93A6] font-mono py-6 text-center">
+                {showArchived ? 'В архиве пока нет каналов' : 'Нет доступных каналов'}
+              </div>
+            ) : (
+              visibleChats.map((ch) => {
+                const isSelected = activeChatId === ch.id;
+                return (
+                  <div
+                    key={ch.id}
+                    onClick={() => setActiveChatId(ch.id)}
+                    className={`p-3 rounded-lg border transition-all flex items-center justify-between cursor-pointer group ${
+                      isSelected
+                        ? 'border-[#00C853] bg-gradient-to-r from-[#00C853]/20 to-[#050810] text-white shadow-[inset_3px_0_0_#00C853]'
+                        : 'border-white/5 bg-[#050810]/70 text-zinc-300 hover:border-white/20 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 truncate">
+                      {ch.type === 'direct' ? (
+                        <MessageSquare size={15} className="text-[#22D3EE] shrink-0" />
+                      ) : (
+                        <Hash size={15} className="text-[#00C853] shrink-0" />
+                      )}
+                      <span className="font-mono text-xs truncate">
+                        {mutedIds.includes(ch.id) && '🔇 '}
+                        {ch.title}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Badge color={ch.type === 'direct' ? 'cyan' : 'emerald'}>
+                        {ch.type === 'direct' ? 'ЛС' : 'Канал'}
+                      </Badge>
+                      <button
+                        onClick={(e) => toggleArchiveChat(ch.id, e)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-[#8A93A6] hover:text-[#FFAA00] transition-opacity"
+                        title={archivedIds.includes(ch.id) ? 'Вернуть из архива' : 'В архив'}
+                      >
+                        <Archive size={12} />
+                      </button>
+                    </div>
                   </div>
-                  <Badge color={ch.type === 'direct' ? 'cyan' : 'emerald'}>
-                    {ch.type === 'direct' ? 'ЛС' : 'Канал'}
-                  </Badge>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
 
-          {/* Быстрые личные сообщения */}
-          <div className="pt-3 border-t border-white/10 space-y-2.5">
-            <div className="font-mono text-[10px] uppercase tracking-widest text-[#34D399] flex items-center gap-1.5">
-              <Sparkles size={11} /> Написать исследователю лично:
+          {/* Быстрый поиск участников и переход в ЛС */}
+          <div className="pt-4 border-t border-white/10 space-y-3">
+            <div className="font-mono text-[11px] uppercase tracking-wider text-[#34D399] flex items-center gap-1.5">
+              <Sparkles size={12} /> Написать участнику или наставнику:
             </div>
             <div className="relative">
-              <Search size={12} className="absolute left-3 top-2.5 text-[#8A93A6]" />
+              <Search size={13} className="absolute left-3 top-2.5 text-[#8A93A6]" />
               <input
                 type="text"
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
-                placeholder="Поиск по имени или никнейму..."
-                className="w-full bg-[#050810]/80 border border-white/10 pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
+                placeholder="Поиск по @username или ФИО..."
+                className="w-full bg-[#050810] border border-white/10 rounded-lg pl-8 pr-3 py-2 text-xs text-white focus:outline-none focus:border-[#00C853]"
               />
             </div>
 
-            <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+            <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
               {allProfiles
                 .filter(
                   (p) =>
@@ -349,181 +507,274 @@ export default function ChatPage() {
                     onClick={async () => {
                       const { data } = await supabase.rpc('get_or_create_direct_chat', { target_user_id: u.id });
                       if (data) {
-                        queryClient.invalidateQueries({ queryKey: ['chats_list_v5'] });
+                        queryClient.invalidateQueries({ queryKey: ['chats_list_v8'] });
                         setActiveChatId(data);
                       }
                     }}
-                    className="p-2 border border-white/5 bg-[#050810]/60 hover:border-[#00C853]/60 flex items-center justify-between cursor-pointer text-xs transition-colors group"
+                    className="p-2.5 rounded-lg border border-white/5 bg-[#050810]/70 hover:border-[#00C853]/60 flex items-center justify-between cursor-pointer text-xs transition-all group"
                   >
-                    <div className="flex items-center gap-2 truncate">
-                      <Avatar src={u.avatar_url} username={u.username} size="sm" />
+                    <div className="flex items-center gap-2.5 truncate">
+                      <Avatar src={u.avatar_url} username={u.username} status={u.status} size="sm" />
                       <div className="truncate">
-                        <div className="font-mono text-[#FFAA00] truncate">{u.username}</div>
-                        <div className="text-[10px] text-[#8A93A6] truncate">{u.full_name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-[#FFAA00] font-semibold truncate">{u.username}</span>
+                          <Badge color={u.highestRole?.color || 'emerald'}>
+                            {u.highestRole?.label || 'Исследователь'}
+                          </Badge>
+                        </div>
+                        <div className="text-[11px] text-[#8A93A6] truncate mt-0.5">{u.full_name}</div>
                       </div>
                     </div>
-                    <span className="text-[10px] font-mono text-[#34D399] group-hover:underline shrink-0">ЛС →</span>
+                    <span className="text-[10px] font-mono text-[#34D399] group-hover:translate-x-0.5 transition-transform shrink-0 ml-2">
+                      ЛС →
+                    </span>
                   </div>
                 ))}
             </div>
           </div>
         </div>
 
-        <div className="pt-3 border-t border-white/10 font-mono text-[10px] text-[#34D399] flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-[#00C853] animate-pulse" />
-          <span>Участников онлайн: {onlineUsers.length > 0 ? onlineUsers.length : 1} чел.</span>
+        {/* Нижний статус-бар онлайна */}
+        <div className="pt-3 border-t border-white/10 font-mono text-[11px] text-[#34D399] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#00C853] animate-pulse" />
+            <span>В сети сейчас: {onlineUsers.length > 0 ? onlineUsers.length : 1} чел.</span>
+          </div>
+          <span className="text-[#8A93A6] text-[10px]">Realtime TLS</span>
         </div>
       </Card>
 
-      {/* ПРАВАЯ КОЛОНКА ПЕРЕПИСКИ */}
-      <Card className="lg:col-span-8 flex flex-col justify-between h-[660px] relative border-white/10 bg-[#060a14]/90 backdrop-blur-2xl shadow-[0_15px_35px_rgba(0,0,0,0.6)]">
-        {/* Шапка чата */}
-        <div className="border-b border-white/10 pb-3 space-y-2">
+      {/* ПРАВАЯ КОЛОНКА: ОКНО СООБЩЕНИЙ */}
+      <Card className="lg:col-span-8 flex flex-col justify-between h-[680px] relative border-white/10 bg-[#060a14]/95 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.7)] p-5">
+        {/* Шапка активного канала */}
+        <div className="border-b border-white/10 pb-3.5 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-medium text-white flex items-center gap-2">
+              <h2 className="text-lg font-medium text-white flex items-center gap-2.5">
                 <span>{currentChat?.title}</span>
-                <Badge color="emerald">{currentChat?.type === 'direct' ? 'Приватный диалог' : 'Открытый канал'}</Badge>
+                <Badge color={currentChat?.type === 'direct' ? 'cyan' : 'emerald'}>
+                  {currentChat?.type === 'direct' ? 'Личный диалог' : 'Официальный канал'}
+                </Badge>
               </h2>
-              <div className="font-mono text-[10px] text-[#34D399] mt-0.5">
-                {typingUser ? `✍ ${typingUser} печатает сообщение...` : 'Шифрованный Realtime-канал «Югра.Нефть»'}
+              <div className="font-mono text-[11px] text-[#34D399] mt-0.5">
+                {typingUser
+                  ? `✍ Участник ${typingUser} печатает сообщение...`
+                  : 'Сообщения защищены • Отображается старший ранг участника'}
               </div>
             </div>
 
             <div className="flex items-center gap-2">
               <div className="relative">
-                <Search size={12} className="absolute left-2.5 top-2 text-[#8A93A6]" />
+                <Search size={13} className="absolute left-3 top-2.5 text-[#8A93A6]" />
                 <input
                   type="text"
                   value={msgSearch}
                   onChange={(e) => setMsgSearch(e.target.value)}
-                  placeholder="Поиск по сообщениям..."
-                  className="bg-[#050810] border border-white/10 pl-7 pr-2 py-1 text-xs text-white w-40 focus:outline-none focus:border-[#FFAA00]"
+                  placeholder="Поиск в чате..."
+                  className="bg-[#050810] border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white w-44 focus:outline-none focus:border-[#FFAA00]"
                 />
               </div>
 
               <button
-                onClick={() =>
-                  setMutedIds((prev) =>
-                    prev.includes(activeChatId) ? prev.filter((id) => id !== activeChatId) : [...prev, activeChatId]
-                  )
-                }
-                className="p-1.5 border border-white/10 text-[#8A93A6] hover:text-white"
-                title="Приглушить уведомления"
+                onClick={() => toggleMuteChat(activeChatId)}
+                className="p-2 rounded-lg border border-white/10 bg-[#050810] text-[#8A93A6] hover:text-white transition-colors"
+                title="Уведомления канала"
               >
-                {mutedIds.includes(activeChatId) ? <BellOff size={14} className="text-[#FFAA00]" /> : <Bell size={14} />}
+                {mutedIds.includes(activeChatId) ? (
+                  <BellOff size={15} className="text-[#FFAA00]" />
+                ) : (
+                  <Bell size={15} />
+                )}
               </button>
             </div>
           </div>
 
-          {/* Закрепленное сообщение */}
+          {/* Закрепленное сообщение в шапке */}
           {pinnedMessages.length > 0 && (
-            <div className="p-2.5 bg-[#FFAA00]/10 border border-[#FFAA00]/30 text-xs flex items-center justify-between">
+            <div className="p-2.5 rounded-lg bg-[#FFAA00]/10 border border-[#FFAA00]/30 text-xs flex items-center justify-between gap-2">
               <span className="truncate">
                 <Pin size={12} className="inline mr-1.5 text-[#FFAA00]" />
                 <strong className="font-mono text-[#FFAA00]">Закреплено:</strong>{' '}
-                <span className="text-zinc-200">{pinnedMessages[pinnedMessages.length - 1].content}</span>
+                <span className="text-zinc-100">{pinnedMessages[pinnedMessages.length - 1].content}</span>
               </span>
+              <button
+                onClick={() => togglePinMessage(pinnedMessages[pinnedMessages.length - 1])}
+                className="text-[10px] font-mono text-[#FFAA00] hover:underline shrink-0"
+              >
+                Открепить
+              </button>
             </div>
           )}
         </div>
 
-        {/* Окно сообщений */}
-        <div className="flex-1 overflow-y-auto py-4 space-y-3 pr-2">
+        {/* Лента сообщений */}
+        <div className="flex-1 overflow-y-auto py-4 space-y-4 pr-2">
           {filteredMessages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center font-mono text-xs text-[#8A93A6] space-y-2">
-              <MessageSquare size={28} className="text-white/20" />
-              <div>В этой комнате пока нет сообщений. Напишите первым!</div>
+              <MessageSquare size={32} className="text-white/20" />
+              <div>В этом канале пока нет сообщений. Начните обсуждение первым!</div>
             </div>
           ) : (
             filteredMessages.map((m) => {
               const isMine = m.author_id === user?.id;
               const authorProf = profileMap[m.author_id];
               const authorUname = authorProf?.username || '@исследователь';
+              const authorFullName = authorProf?.full_name || '';
+              const roleBadge = authorProf?.highestRole || getHighestRole([], authorUname);
               const parentMsg = m.reply_to_id ? rawMessages.find((x) => x.id === m.reply_to_id) : null;
               const reactions = m.reactions || {};
+              const attachments = Array.isArray(m.attachments) ? m.attachments : [];
 
               return (
-                <div key={m.id} className={`flex items-start gap-3 ${isMine ? 'flex-row-reverse' : ''} group`}>
+                <div key={m.id} className={`flex items-start gap-3.5 ${isMine ? 'flex-row-reverse' : ''} group`}>
                   <Avatar
                     src={authorProf?.avatar_url}
                     username={authorUname}
                     status={authorProf?.status}
-                    size="sm"
+                    size="md"
                     onClick={() => navigate(`/profile/${authorUname.replace('@', '')}`)}
                   />
 
                   <div
-                    className={`p-3.5 border max-w-lg space-y-1.5 relative transition-all ${
+                    className={`p-4 rounded-xl border max-w-xl space-y-2 relative transition-all ${
                       isMine
-                        ? 'border-[#00C853]/40 bg-gradient-to-br from-[#00C853]/15 to-[#050810] shadow-[0_4px_15px_rgba(0,200,83,0.1)]'
-                        : 'border-white/10 bg-[#050810]/85'
+                        ? 'border-[#00C853]/40 bg-gradient-to-br from-[#00C853]/15 to-[#050810] shadow-[0_6px_20px_rgba(0,200,83,0.1)]'
+                        : 'border-white/10 bg-[#050810]/90 hover:border-white/20'
                     }`}
                   >
-                    {/* Цитирование */}
+                    {/* Ответ на предыдущее сообщение */}
                     {parentMsg && (
-                      <div className="p-2 border-l-2 border-[#FFAA00] bg-black/50 text-[11px] text-[#8A93A6] mb-1">
-                        <span className="text-[#FFAA00] font-mono">
-                          {profileMap[parentMsg.author_id]?.username || '@автор'}:
+                      <div className="p-2 rounded border-l-2 border-[#FFAA00] bg-black/50 text-xs text-[#8A93A6]">
+                        <span className="text-[#FFAA00] font-mono font-semibold">
+                          {profileMap[parentMsg.author_id]?.username || '@участник'}:
                         </span>{' '}
                         <span className="truncate">{parentMsg.content}</span>
                       </div>
                     )}
 
-                    <div className="flex items-center justify-between gap-4 font-mono text-[10px]">
-                      <span className="text-[#FFAA00] font-bold">{authorUname}</span>
+                    {/* Шапка сообщения: Ник + Старшая Роль + Кнопки действий */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 font-mono text-[11px]">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          onClick={() => navigate(`/profile/${authorUname.replace('@', '')}`)}
+                          className="text-[#FFAA00] font-bold cursor-pointer hover:underline"
+                        >
+                          {authorUname}
+                        </span>
+                        {authorFullName && (
+                          <span className="text-zinc-400 text-[10px] hidden sm:inline">({authorFullName})</span>
+                        )}
+                        {/* БЕЙДЖ СТАРШЕЙ РОЛИ ПОЛЬЗОВАТЕЛЯ */}
+                        <Badge color={roleBadge.color}>{roleBadge.label}</Badge>
+                        {authorProf?.is_banned && <Badge color="red">Заблокирован</Badge>}
+                      </div>
+
+                      {/* Панель действий над сообщением */}
                       <div className="flex items-center gap-1.5 text-[#8A93A6]">
-                        {m.edited_at && <span className="text-zinc-400 italic">изменено</span>}
+                        {m.edited_at && <span className="text-zinc-500 italic text-[10px]">изм.</span>}
                         <span>{new Date(m.created_at).toLocaleTimeString().slice(0, 5)}</span>
 
                         <button
                           onClick={() => setReactionMenuMsgId(reactionMenuMsgId === m.id ? null : m.id)}
-                          className="hover:text-[#FFAA00] p-0.5"
-                          title="Поставить реакцию"
+                          className="hover:text-[#FFAA00] p-1 rounded hover:bg-white/5"
+                          title="Реакция"
                         >
-                          <SmilePlus size={12} />
+                          <SmilePlus size={13} />
                         </button>
-                        <button onClick={() => setReplyTo(m)} className="hover:text-white p-0.5" title="Ответить">
-                          <Reply size={12} />
+                        <button
+                          onClick={() => setReplyTo(m)}
+                          className="hover:text-white p-1 rounded hover:bg-white/5"
+                          title="Ответить"
+                        >
+                          <Reply size={13} />
                         </button>
-                        <button onClick={() => togglePinMessage(m)} className="hover:text-[#FFAA00] p-0.5" title="Закрепить">
-                          <Pin size={12} />
+                        <button
+                          onClick={() => togglePinMessage(m)}
+                          className="hover:text-[#FFAA00] p-1 rounded hover:bg-white/5"
+                          title="Закрепить"
+                        >
+                          <Pin size={13} />
                         </button>
 
-                        {isMine && (
+                        {/* Кнопка ЖАЛОБЫ на чужое сообщение */}
+                        {!isMine && authorProf && (
+                          <button
+                            onClick={() => setReportTarget({ userObj: authorProf, messageObj: m })}
+                            className="hover:text-red-400 p-1 rounded hover:bg-red-500/10"
+                            title="Пожаловаться модераторам"
+                          >
+                            <Flag size={13} />
+                          </button>
+                        )}
+
+                        {/* Кнопка быстрого бана для Админа прямо из чата */}
+                        {isAdmin && !isMine && authorProf && (
+                          <button
+                            onClick={() => quickBanMutation.mutate(authorProf)}
+                            className="hover:text-red-400 p-1 rounded hover:bg-red-500/10 text-red-400/80"
+                            title={authorProf.is_banned ? 'Разблокировать участника' : 'Заблокировать участника'}
+                          >
+                            <Ban size={13} />
+                          </button>
+                        )}
+
+                        {/* Редактирование и удаление (своих или любых для Админа) */}
+                        {(isMine || isAdmin) && (
                           <>
-                            <button
-                              onClick={() => {
-                                setEditingMsg(m);
-                                setText(m.content);
-                              }}
-                              className="hover:text-[#22D3EE] p-0.5"
-                              title="Редактировать"
-                            >
-                              <Edit2 size={12} />
-                            </button>
+                            {isMine && (
+                              <button
+                                onClick={() => {
+                                  setEditingMsg(m);
+                                  setText(m.content);
+                                }}
+                                className="hover:text-[#22D3EE] p-1 rounded hover:bg-white/5"
+                                title="Редактировать"
+                              >
+                                <Edit2 size={13} />
+                              </button>
+                            )}
                             <button
                               onClick={() => deleteMsgMutation.mutate(m.id)}
-                              className="hover:text-red-400 p-0.5"
-                              title="Удалить"
+                              className="hover:text-red-400 p-1 rounded hover:bg-red-500/10"
+                              title="Удалить сообщение"
                             >
-                              <Trash2 size={12} />
+                              <Trash2 size={13} />
                             </button>
                           </>
                         )}
                       </div>
                     </div>
 
-                    <p className="text-xs sm:text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed">{m.content}</p>
+                    {/* Текст сообщения */}
+                    <p className="text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed">{m.content}</p>
 
-                    {/* Меню выбора эмодзи */}
+                    {/* Вложенные файлы */}
+                    {attachments.length > 0 && (
+                      <div className="pt-1 space-y-1">
+                        {attachments.map((att, idx) => (
+                          <a
+                            key={idx}
+                            href={att.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded bg-white/5 border border-white/10 text-xs text-[#22D3EE] hover:border-[#22D3EE]"
+                          >
+                            <FileText size={13} />
+                            <span>{att.name || 'Документ'}</span>
+                            <ExternalLink size={11} />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Всплывающее меню выбора эмодзи */}
                     {reactionMenuMsgId === m.id && (
-                      <div className="absolute -top-7 right-2 bg-[#091122] border border-white/20 rounded-full px-2 py-1 flex gap-1.5 z-30 shadow-2xl animate-fadeIn">
+                      <div className="absolute -top-9 right-2 bg-[#091122] border border-white/20 rounded-full px-3 py-1.5 flex gap-2 z-30 shadow-2xl">
                         {EMOJIS.map((em) => (
                           <button
                             key={em}
                             onClick={() => toggleReaction(m, em)}
-                            className="hover:scale-130 transition-transform text-sm"
+                            className="hover:scale-125 transition-transform text-base"
                           >
                             {em}
                           </button>
@@ -531,9 +782,9 @@ export default function ChatPage() {
                       </div>
                     )}
 
-                    {/* Бейджи реакций под сообщением */}
+                    {/* Отображение поставленных реакций */}
                     {Object.keys(reactions).length > 0 && (
-                      <div className="flex flex-wrap gap-1 pt-1">
+                      <div className="flex flex-wrap gap-1.5 pt-1">
                         {Object.entries(reactions).map(([em, users]) => {
                           if (!Array.isArray(users) || !users.length) return null;
                           const hasMy = users.includes(profile?.username);
@@ -541,11 +792,12 @@ export default function ChatPage() {
                             <button
                               key={em}
                               onClick={() => toggleReaction(m, em)}
-                              className={`px-2 py-0.5 rounded-full text-[11px] font-mono flex items-center gap-1 border transition-all ${
+                              className={`px-2.5 py-0.5 rounded-full text-xs font-mono flex items-center gap-1 border transition-all ${
                                 hasMy
                                   ? 'bg-[#00C853]/25 border-[#00C853] text-[#34D399]'
-                                  : 'bg-white/5 border-white/10 text-zinc-400 hover:border-white/30'
+                                  : 'bg-white/5 border-white/10 text-zinc-300 hover:border-white/30'
                               }`}
+                              title={users.join(', ')}
                             >
                               <span>{em}</span>
                               <span>{users.length}</span>
@@ -562,11 +814,13 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Плашка редактирования / цитирования */}
+        {/* Плашка активного ответа или редактирования */}
         {(editingMsg || replyTo) && (
-          <div className="px-4 py-2 bg-[#050810] border-t border-[#FFAA00]/40 flex items-center justify-between text-xs font-mono text-[#FFAA00]">
-            <span>
-              {editingMsg ? `✎ Редактирование сообщения` : `↩ Ответ на сообщение`}
+          <div className="px-4 py-2.5 rounded-t-lg bg-[#050810] border border-[#FFAA00]/40 flex items-center justify-between text-xs font-mono text-[#FFAA00]">
+            <span className="truncate">
+              {editingMsg
+                ? `✎ Редактирование сообщения: "${editingMsg.content.slice(0, 60)}"`
+                : `↩ Ответ участнику ${profileMap[replyTo.author_id]?.username || '@автор'}: "${replyTo.content.slice(0, 60)}"`}
             </span>
             <button
               onClick={() => {
@@ -574,33 +828,95 @@ export default function ChatPage() {
                 setReplyTo(null);
                 setText('');
               }}
-              className="text-red-400 hover:text-red-300"
+              className="text-red-400 hover:text-red-300 ml-3 shrink-0"
             >
               ✕ Отмена
             </button>
           </div>
         )}
 
-        {/* Форма ввода */}
-        <form onSubmit={handleSendOrEdit} className="pt-3 border-t border-white/10 flex items-center gap-2">
-          <label className="p-2.5 border border-white/10 text-[#8A93A6] hover:text-white cursor-pointer bg-[#050810]">
+        {/* Форма отправки сообщения */}
+        <form onSubmit={handleSendOrEdit} className="pt-3 border-t border-white/10 flex items-center gap-2.5">
+          <label
+            className="p-3 rounded-lg border border-white/10 text-[#8A93A6] hover:text-white cursor-pointer bg-[#050810] transition-colors"
+            title="Прикрепить презентацию или файл"
+          >
             <Paperclip size={16} />
             <input type="file" onChange={handleFileAttach} className="hidden" />
           </label>
           <input
             type="text"
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={editingMsg ? 'Измените текст сообщения...' : 'Введите сообщение в канал...'}
-            className="flex-1 bg-[#050810] border border-white/10 px-4 py-2.5 text-xs text-white focus:outline-none focus:border-[#00C853]"
+            onChange={(e) => handleTypingInput(e.target.value)}
+            placeholder={
+              profile?.is_banned
+                ? 'Вы заблокированы модератором...'
+                : editingMsg
+                ? 'Введите новый текст сообщения...'
+                : 'Напишите сообщение в канал...'
+            }
+            disabled={Boolean(profile?.is_banned)}
+            className="flex-1 bg-[#050810] border border-white/15 rounded-lg px-4 py-3 text-sm text-white focus:outline-none focus:border-[#00C853] disabled:opacity-50"
           />
-          <Button type="submit" size="md" disabled={sendMutation.isPending}>
-            {editingMsg ? <Check size={14} /> : <Send size={14} />}
+          <Button type="submit" size="md" disabled={sendMutation.isPending || Boolean(profile?.is_banned)} className="px-5 py-3 rounded-lg">
+            {editingMsg ? <Check size={16} /> : <Send size={16} />}
           </Button>
         </form>
       </Card>
 
-      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать командный канал">
+      {/* МОДАЛЬНОЕ ОКНО: ОТПРАВКА ЖАЛОБЫ НА ПОЛЬЗОВАТЕЛЯ / СООБЩЕНИЕ */}
+      <Modal
+        isOpen={Boolean(reportTarget)}
+        onClose={() => setReportTarget(null)}
+        title={`Пожаловаться на ${reportTarget?.userObj?.username || 'участника'}`}
+      >
+        <form onSubmit={(e) => submitReportMutation.mutate(e)} className="space-y-4 text-xs">
+          {reportTarget?.messageObj && (
+            <div className="p-3 rounded bg-red-500/10 border border-red-500/30 text-zinc-200">
+              <div className="font-mono text-[10px] uppercase text-red-400 mb-1">Сообщение с нарушением:</div>
+              <div className="italic">«{reportTarget.messageObj.content}»</div>
+            </div>
+          )}
+
+          <div>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1.5">
+              Категория нарушения
+            </label>
+            <select
+              value={reportCategory}
+              onChange={(e) => setReportCategory(e.target.value)}
+              className="w-full bg-[#050810] border border-white/15 p-2.5 text-xs text-white rounded focus:outline-none focus:border-[#FFAA00]"
+            >
+              {REPORT_REASONS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1.5">
+              Дополнительный комментарий для модераторов
+            </label>
+            <textarea
+              rows={3}
+              value={reportComment}
+              onChange={(e) => setReportComment(e.target.value)}
+              placeholder="Опишите детали нарушения..."
+              className="w-full bg-[#050810] border border-white/15 p-3 text-xs text-white rounded focus:outline-none focus:border-[#00C853]"
+              required
+            />
+          </div>
+
+          <Button type="submit" variant="gold" className="w-full justify-center">
+            <ShieldAlert size={14} /> Отправить жалобу в Админ-панель
+          </Button>
+        </form>
+      </Modal>
+
+      {/* МОДАЛЬНОЕ ОКНО: СОЗДАНИЕ НОВОГО КАНАЛА */}
+      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать проектный канал">
         <form
           onSubmit={async (e) => {
             e.preventDefault();
@@ -611,7 +927,7 @@ export default function ChatPage() {
               .single();
             if (data) {
               await supabase.from('chat_members').upsert([{ chat_id: data.id, user_id: user.id, role: 'owner' }]);
-              queryClient.invalidateQueries({ queryKey: ['chats_list_v5'] });
+              queryClient.invalidateQueries({ queryKey: ['chats_list_v8'] });
               setActiveChatId(data.id);
               setNewChatModal(false);
               setNewChatTitle('');
@@ -621,13 +937,15 @@ export default function ChatPage() {
         >
           <input
             type="text"
-            placeholder="Например: #проект-утилизации-пнг"
+            placeholder="Например: Проектная группа ХМАО-Югра"
             value={newChatTitle}
             onChange={(e) => setNewChatTitle(e.target.value)}
-            className="w-full bg-[#050810] border border-white/15 p-2.5 text-xs text-white"
+            className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
             required
           />
-          <Button type="submit" variant="gold" className="w-full">Создать канал</Button>
+          <Button type="submit" variant="gold" className="w-full">
+            Создать канал
+          </Button>
         </form>
       </Modal>
     </div>
