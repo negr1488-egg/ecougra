@@ -10,13 +10,11 @@ import {
   BookOpen,
   Heart,
   Send,
-  ArrowRight,
   Calculator,
   Compass,
   Trophy,
   Sparkles,
-  Flame,
-  Flag
+  MessageSquare
 } from 'lucide-react';
 
 const FALLBACK_NEWS = [
@@ -64,7 +62,7 @@ export default function HomePage() {
 
   // 1. Загрузка выпусков газеты
   const { data: newsArticles = FALLBACK_NEWS, isLoading: newsLoading } = useQuery({
-    queryKey: ['home_newspaper_v8'],
+    queryKey: ['home_newspaper_v9'],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -81,13 +79,22 @@ export default function HomePage() {
     }
   });
 
-  // 2. Загрузка постов сообщества вместе со старшей ролью каждого автора
+  // 2. НАДЁЖНАЯ загрузка постов сообщества с объединением авторов и ролей
   const { data: posts = [], isLoading: postsLoading } = useQuery({
-    queryKey: ['home_posts_with_roles_v8'],
+    queryKey: ['home_feed_posts_v9'],
     queryFn: async () => {
       try {
-        const [postsRes, profsRes, urRes] = await Promise.all([
-          supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(20),
+        // Запрашиваем посты
+        const { data: rawPosts, error: pErr } = await supabase
+          .from('posts')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(25);
+
+        if (pErr || !rawPosts) return [];
+
+        // Запрашиваем авторов и роли
+        const [profsRes, urRes] = await Promise.all([
           supabase.from('profiles').select('id, username, full_name, avatar_url, status'),
           supabase.from('user_roles').select('user_id, role_id')
         ]);
@@ -99,44 +106,56 @@ export default function HomePage() {
           roleMap[ur.user_id].push(ROLE_ID_MAP[ur.role_id] || 'student');
         });
 
-        return (postsRes.data || [])
-          .filter((p) => !p.deleted_at)
-          .map((p) => {
-            const author = profMap[p.author_id] || { username: '@исследователь', full_name: 'Участник' };
-            const highestRole = getHighestRole(roleMap[p.author_id] || ['student'], author.username);
-            return {
-              ...p,
-              author,
-              highestRole
-            };
-          });
-      } catch {
+        return rawPosts.map((p) => {
+          const author = profMap[p.author_id] || { username: '@исследователь', full_name: 'Участник' };
+          const highestRole = getHighestRole(roleMap[p.author_id] || ['student'], author.username);
+          const postBody = p.content || p.body || '';
+
+          return {
+            ...p,
+            bodyText: postBody,
+            author,
+            highestRole
+          };
+        });
+      } catch (e) {
+        console.error('Ошибка загрузки ленты постов:', e);
         return [];
       }
     }
   });
 
-  // Публикация поста в ленту
+  // Публикация нового поста в общую ленту сообщества
   const createPostMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
       if (!postText.trim() || !user?.id) return;
       if (profile?.is_banned) throw new Error('Ваш аккаунт ограничен модератором');
-      checkRateLimit('create_post', 2000);
+      checkRateLimit('home_post_create', 1500);
 
+      const content = postText.trim();
+      // Записываем и в body, и в content для совместимости схем
       const { error } = await supabase.from('posts').insert([
         {
           author_id: user.id,
-          content: postText.trim(),
-          tags: ['ЮграНефть', 'ЗелёнаяЮгра']
+          body: content,
+          content: content,
+          tags: ['ЮграНефть', 'Сообщество']
         }
       ]);
       if (error) throw error;
+
+      await supabase.rpc('award_xp_secure', {
+        p_action: 'community_post_created',
+        p_entity: 'post',
+        p_xp_delta: 20,
+        p_badge: 'Голос Югры'
+      });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['home_posts_with_roles_v8'] });
+      queryClient.invalidateQueries({ queryKey: ['home_feed_posts_v9'] });
       setPostText('');
-      toast('Запись опубликована в ленте! (+20 XP)', 'success');
+      toast('Запись опубликована в ленте сообщества! (+20 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -152,7 +171,7 @@ export default function HomePage() {
     localStorage.setItem('ugra_liked_posts', JSON.stringify(updatedIds));
 
     await supabase.from('posts').update({ likes_count: nextLikes }).eq('id', post.id);
-    queryClient.invalidateQueries({ queryKey: ['home_posts_with_roles_v8'] });
+    queryClient.invalidateQueries({ queryKey: ['home_feed_posts_v9'] });
   };
 
   const leadArticle = newsArticles[0] || FALLBACK_NEWS[0];
@@ -160,7 +179,7 @@ export default function HomePage() {
 
   return (
     <div className="space-y-10">
-      {/* 1. ГЛАВНЫЙ РАЗВОРОТ ГАЗЕТЫ «НЕФТЯНОЙ ВЕСТНИК ЮГРЫ» */}
+      {/* 1. ГЛАВНЫЙ ВЫПУСК ГАЗЕТЫ «НЕФТЯНОЙ ВЕСТНИК ЮГРЫ» */}
       <section className="space-y-4">
         <div className="border-y-2 border-white/20 py-3 flex flex-wrap items-center justify-between gap-4 font-mono text-[11px] uppercase tracking-widest text-[#8A93A6]">
           <div className="flex items-center gap-2 text-[#FFAA00]">
@@ -178,7 +197,7 @@ export default function HomePage() {
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge color="gold">{leadArticle.category || 'Главный выпуск'}</Badge>
-                  <Badge color="purple">Старшая роль редакции</Badge>
+                  <Badge color="purple">Официальный вестник</Badge>
                 </div>
 
                 <h1 className="text-2xl sm:text-3xl font-semibold text-white leading-tight">
@@ -219,7 +238,7 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* 2. БЫСТРЫЕ ПЕРЕХОДЫ В ИНЖЕНЕРНЫЕ МОДУЛИ */}
+      {/* 2. БЫСТРЫЕ МОДУЛИ */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card
           onClick={() => navigate('/learn')}
@@ -255,7 +274,7 @@ export default function HomePage() {
         </Card>
       </section>
 
-      {/* 3. ЖИВАЯ ЛЕНТА СООБЩЕСТВА С ОТОБРАЖЕНИЕМ СТАРШЕЙ РОЛИ АВТОРА */}
+      {/* 3. ЛЕНТА СООБЩЕСТВА С ОТОБРАЖЕНИЕМ СТАРШЕЙ РОЛИ */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -266,6 +285,7 @@ export default function HomePage() {
           </div>
         </div>
 
+        {/* Форма публикации поста */}
         <Card className="p-5 bg-[#060a14]">
           <form onSubmit={(e) => createPostMutation.mutate(e)} className="flex flex-col sm:flex-row gap-3">
             <input
@@ -281,8 +301,13 @@ export default function HomePage() {
           </form>
         </Card>
 
+        {/* Карточки постов */}
         {postsLoading ? (
           <Skeleton className="h-40 w-full" />
+        ) : posts.length === 0 ? (
+          <Card className="p-8 text-center font-mono text-xs text-[#8A93A6] bg-[#060a14]">
+            В ленте пока нет записей. Опубликуйте первую запись выше!
+          </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {posts.map((p) => {
@@ -291,7 +316,7 @@ export default function HomePage() {
               const roleBadge = p.highestRole || { label: 'Исследователь', color: 'emerald' };
 
               return (
-                <Card key={p.id} className="p-5 flex flex-col justify-between space-y-4 bg-[#060a14]/90">
+                <Card key={p.id} className="p-5 flex flex-col justify-between space-y-4 bg-[#060a14]/90 border-white/10">
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div
@@ -304,7 +329,7 @@ export default function HomePage() {
                             <span className="font-mono text-xs text-[#FFAA00] font-bold group-hover:underline">
                               {uname}
                             </span>
-                            {/* СТАРШАЯ РОЛЬ АВТОРА ПОСТА */}
+                            {/* СТАРШАЯ РОЛЬ АВТОРА */}
                             <Badge color={roleBadge.color}>{roleBadge.label}</Badge>
                           </div>
                           <div className="text-[11px] text-[#8A93A6]">{p.author?.full_name}</div>
@@ -315,7 +340,9 @@ export default function HomePage() {
                       </span>
                     </div>
 
-                    <p className="text-xs sm:text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap">{p.content}</p>
+                    <p className="text-xs sm:text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap">
+                      {p.bodyText}
+                    </p>
                   </div>
 
                   <div className="pt-3 border-t border-white/10 flex items-center justify-between">
@@ -330,6 +357,7 @@ export default function HomePage() {
                       <Heart size={13} className={isLiked ? 'fill-[#34D399]' : ''} />
                       <span>{p.likes_count || 0}</span>
                     </button>
+                    <span className="font-mono text-[10px] text-[#8A93A6]">Югра.Сообщество</span>
                   </div>
                 </Card>
               );

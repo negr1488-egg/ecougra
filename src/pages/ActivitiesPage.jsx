@@ -12,13 +12,12 @@ import {
   Award,
   FolderPlus,
   Users,
-  CheckCircle2,
   Sliders,
   ShieldCheck,
   RotateCcw,
-  Sparkles,
   UserCheck,
-  BookOpen
+  BookOpen,
+  Link as LinkIcon
 } from 'lucide-react';
 
 const STATUS_RU = {
@@ -120,6 +119,9 @@ export default function ActivitiesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedProj, setSelectedProj] = useState(null);
 
+  // Привязка наставника по @username
+  const [mentorInput, setMentorInput] = useState('');
+
   // Форма создания проекта
   const [projForm, setProjForm] = useState({
     title: '',
@@ -128,7 +130,7 @@ export default function ActivitiesPage() {
     blind_mode: false,
     pitch_at: '',
     call_link: '',
-    mentor_id: profile?.mentor_id || ''
+    mentor_username: ''
   });
 
   // Состояния для кабинета Наставника
@@ -148,25 +150,19 @@ export default function ActivitiesPage() {
   const [simStep, setSimStep] = useState(0);
   const [simFeedback, setSimFeedback] = useState(null);
 
-  // Загрузка всех проектов, рецензий, профилей и списка наставников
+  // Загрузка проектов и профилей
   const { data: bundle, isLoading } = useQuery({
-    queryKey: ['activities_full_v8', user?.id],
+    queryKey: ['activities_full_v9', user?.id],
     queryFn: async () => {
-      const [projsRes, revsRes, profsRes, urRes] = await Promise.all([
+      const [projsRes, revsRes, profsRes] = await Promise.all([
         supabase.from('projects').select('*').order('created_at', { ascending: false }),
         supabase.from('project_reviews').select('*'),
-        supabase.from('profiles').select('id, username, full_name, xp, mentor_id, avatar_url'),
-        supabase.from('user_roles').select('user_id, role_id')
+        supabase.from('profiles').select('id, username, full_name, xp, mentor_id, avatar_url')
       ]);
 
       const profs = profsRes.data || [];
       const profMap = Object.fromEntries(profs.map((p) => [p.id, p]));
       const revs = revsRes.data || [];
-      const teacherIds = new Set(
-        (urRes.data || []).filter((r) => r.role_id === 2 || r.role_id === 4).map((r) => r.user_id)
-      );
-
-      const mentorsList = profs.filter((p) => teacherIds.has(p.id));
 
       const enrichedProjects = (projsRes.data || []).map((pr) => {
         const prReviews = revs.filter((r) => r.project_id === pr.id);
@@ -199,33 +195,101 @@ export default function ActivitiesPage() {
 
       return {
         projects: enrichedProjects,
-        mentorsList,
         myMentees,
         profMap
       };
     }
   });
 
-  // Привязка к наставнику в 1 клик
+  // Приватная привязка к наставнику по его личному @username
   const bindMentorMutation = useMutation({
-    mutationFn: async (mentorId) => {
-      if (!user?.id) throw new Error('Войдите в аккаунт');
-      const { error } = await supabase.from('profiles').update({ mentor_id: mentorId }).eq('id', user.id);
-      if (error) throw error;
+    mutationFn: async (e) => {
+      e?.preventDefault();
+      const raw = mentorInput.trim();
+      if (!raw) throw new Error('Введите никнейм наставника');
+      const clean = raw.startsWith('@') ? raw : `@${raw}`;
+
+      const { data: foundMentor, error: findErr } = await supabase
+        .from('profiles')
+        .select('id, username, full_name')
+        .ilike('username', clean)
+        .maybeSingle();
+
+      if (findErr || !foundMentor) {
+        throw new Error(`Пользователь ${clean} не найден в системе`);
+      }
+
+      if (foundMentor.id === user.id) {
+        throw new Error('Нельзя указать себя своим же наставником');
+      }
+
+      const { data: rolesData } = await supabase
+        .from('user_roles')
+        .select('role_id')
+        .eq('user_id', foundMentor.id);
+
+      const roleIds = (rolesData || []).map((r) => r.role_id);
+      const isEligible = roleIds.includes(2) || roleIds.includes(4) || roleIds.includes(5);
+
+      if (!isEligible) {
+        throw new Error(`Пользователь ${clean} не обладает статусом Наставника`);
+      }
+
+      const { error: updErr } = await supabase
+        .from('profiles')
+        .update({ mentor_id: foundMentor.id })
+        .eq('id', user.id);
+
+      if (updErr) throw updErr;
+      return foundMentor;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
+    onSuccess: (mentor) => {
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v9'] });
       if (refreshProfile) refreshProfile();
-      toast('Вы успешно привязались к научному наставнику!', 'success');
+      setMentorInput('');
+      toast(`Куратор ${mentor.username} (${mentor.full_name}) привязан!`, 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Создание проекта
+  const unbindMentorMutation = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from('profiles').update({ mentor_id: null }).eq('id', user.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v9'] });
+      if (refreshProfile) refreshProfile();
+      toast('Наставник отвязан', 'info');
+    }
+  });
+
+  // Создание проекта с валидацией куратора по username
   const createProjectMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
       if (!user?.id) throw new Error('Необходима авторизация');
+
+      let resolvedMentorId = profile?.mentor_id || null;
+
+      // Если в модалке ввели никнейм наставника вручную
+      if (projForm.mentor_username.trim()) {
+        const raw = projForm.mentor_username.trim();
+        const clean = raw.startsWith('@') ? raw : `@${raw}`;
+
+        const { data: foundMentor } = await supabase
+          .from('profiles')
+          .select('id')
+          .ilike('username', clean)
+          .maybeSingle();
+
+        if (!foundMentor) {
+          throw new Error(`Указанный наставник ${clean} не найден`);
+        }
+        resolvedMentorId = foundMentor.id;
+      }
 
       const payload = {
         title: projForm.title.trim(),
@@ -233,7 +297,7 @@ export default function ActivitiesPage() {
         impact_metric: projForm.impact_metric.trim(),
         status: 'submitted',
         author_id: user.id,
-        mentor_id: projForm.mentor_id || profile?.mentor_id || null,
+        mentor_id: resolvedMentorId,
         blind_mode: Boolean(projForm.blind_mode)
       };
 
@@ -251,7 +315,7 @@ export default function ActivitiesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v9'] });
       setCreateOpen(false);
       setProjForm({
         title: '',
@@ -260,14 +324,14 @@ export default function ActivitiesPage() {
         blind_mode: false,
         pitch_at: '',
         call_link: '',
-        mentor_id: profile?.mentor_id || ''
+        mentor_username: ''
       });
-      toast('Проект отправлен на проверку! (+75 XP)', 'success');
+      toast('Проект подан на рассмотрение! (+75 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Действие Наставника: Курирование и допуск проекта к защите
+  // Курирование Наставника
   const mentorCurateMutation = useMutation({
     mutationFn: async ({ proj, newStatus }) => {
       const note = mentorNotes[proj.id] || '';
@@ -294,13 +358,13 @@ export default function ActivitiesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
-      toast('Кураторское решение сохранено! Начислено +50 XP наставника', 'success');
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v9'] });
+      toast('Решение наставника зафиксировано! (+50 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Действие Эксперта Жюри: Оценка проекта по 4 критериям
+  // Оценка Жюри
   const submitJuryReviewMutation = useMutation({
     mutationFn: async (proj) => {
       const { error } = await supabase.from('project_reviews').upsert([
@@ -328,9 +392,9 @@ export default function ActivitiesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['activities_full_v8'] });
+      queryClient.invalidateQueries({ queryKey: ['activities_full_v9'] });
       setSelectedProj(null);
-      toast('Экспертный аудит жюри зафиксирован! (+75 XP)', 'success');
+      toast('Оценка жюри сохранена! (+75 XP)', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -338,13 +402,12 @@ export default function ActivitiesPage() {
   if (isLoading) return <Skeleton className="h-96 w-full" />;
 
   const projects = bundle?.projects || [];
-  const mentorsList = bundle?.mentorsList || [];
   const myMentees = bundle?.myMentees || [];
   const currentMentorObj = profile?.mentor_id ? bundle?.profMap?.[profile.mentor_id] : null;
 
   return (
     <div className="space-y-8">
-      {/* ШАПКА И НАВИГАЦИЯ ПО РОЛЕВЫМ АКТИВНОСТЯМ */}
+      {/* ШАПКА РАЗДЕЛА */}
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-white/10 pb-5">
         <div>
           <div className="eyebrow">Ролевая экосистема проектов «Зелёный след»</div>
@@ -362,7 +425,7 @@ export default function ActivitiesPage() {
                 : 'border-white/10 text-[#8A93A6] hover:text-white'
             }`}
           >
-            01 / Проекты и Наставники ({projects.length})
+            01 / Проекты ({projects.length})
           </button>
 
           {isTeacher && (
@@ -415,42 +478,61 @@ export default function ActivitiesPage() {
         </div>
       </div>
 
-      {/* ВКЛАДКА 1: ВИТРИНА ПРОЕКТОВ + ВЫБОР НАСТАВНИКА */}
+      {/* ВКЛАДКА 1: ПРОЕКТЫ И ЗАКРЫТАЯ ПРИВЯЗКА КУРАТОРА */}
       {tab === 'projects' && (
         <div className="space-y-6">
-          {/* Блок выбора наставника для исследователя */}
+          {/* Блок привязки куратора по личному @username */}
           <Card className="p-5 border-[#22D3EE]/30 bg-gradient-to-r from-[#060a14] via-[#071923] to-[#060a14]">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div className="space-y-1">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+              <div className="space-y-1 max-w-xl">
                 <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
-                  <UserCheck size={15} /> Научное кураторство и привязка наставника
+                  <UserCheck size={15} /> Персональное научное кураторство
                 </div>
-                <p className="text-xs text-zinc-300">
-                  {currentMentorObj
-                    ? `Ваш текущий наставник: ${currentMentorObj.full_name} (${currentMentorObj.username}). Он курирует ваши проекты.`
-                    : 'Выберите наставника из списка преподавателей, чтобы он помогал дорабатывать проекты и допускал их к защите.'}
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  {currentMentorObj ? (
+                    <span>
+                      Ваш текущий наставник:{' '}
+                      <strong className="text-white">
+                        {currentMentorObj.full_name} ({currentMentorObj.username})
+                      </strong>
+                      . Он курирует ваши проекты и допускает к защите.
+                    </span>
+                  ) : (
+                    'Наставник передаёт вам свой личный @username для привязки. Общедоступный выбор отключён во избежание ошибок.'
+                  )}
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {mentorsList.map((m) => {
-                  const isMyMentor = profile?.mentor_id === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => bindMentorMutation.mutate(m.id)}
-                      className={`px-3 py-2 rounded border font-mono text-xs flex items-center gap-2 transition-all ${
-                        isMyMentor
-                          ? 'border-[#22D3EE] bg-[#22D3EE]/20 text-white font-bold'
-                          : 'border-white/15 bg-[#050810] text-zinc-300 hover:border-[#22D3EE]'
-                      }`}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                {currentMentorObj ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => unbindMentorMutation.mutate()}
+                    className="text-red-400 border-red-500/30 hover:bg-red-500/10"
+                  >
+                    Отвязать наставника
+                  </Button>
+                ) : (
+                  <form onSubmit={(e) => bindMentorMutation.mutate(e)} className="flex items-center gap-2">
+                    <Input
+                      placeholder="@username_наставника"
+                      value={mentorInput}
+                      onChange={(e) => setMentorInput(e.target.value)}
+                      className="w-48"
+                    />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      variant="primary"
+                      disabled={bindMentorMutation.isPending}
                     >
-                      <span>{m.username}</span>
-                      <span className="text-[10px] text-[#34D399]">{isMyMentor ? '✓ Ваш куратор' : 'Выбрать'}</span>
-                    </button>
-                  );
-                })}
-                <Button variant="gold" size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5 ml-auto">
+                      <LinkIcon size={13} /> Привязать
+                    </Button>
+                  </form>
+                )}
+
+                <Button variant="gold" size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5 shrink-0">
                   <FolderPlus size={14} /> Подать проект на защиту
                 </Button>
               </div>
@@ -535,7 +617,7 @@ export default function ActivitiesPage() {
         </div>
       )}
 
-      {/* ВКЛАДКА 2: САМОБЫТНАЯ АКТИВНОСТЬ НАСТАВНИКА — «ИНЖЕНЕРНАЯ МАСТЕРСКАЯ» */}
+      {/* ВКЛАДКА 2: ИНЖЕНЕРНАЯ МАСТЕРСКАЯ НАСТАВНИКА */}
       {tab === 'mentor_lab' && isTeacher && (
         <div className="space-y-6">
           <Card className="p-6 border-[#22D3EE]/40 bg-gradient-to-r from-[#060a14] via-[#092230] to-[#050810]">
@@ -546,7 +628,7 @@ export default function ActivitiesPage() {
                   Инженерная мастерская и кураторство проектов
                 </h2>
                 <p className="text-xs text-zinc-300">
-                  Проверяйте работы своих учеников и других участников, оставляйте методические указания и выдавайте допуск к защите перед жюри.
+                  Ученики привязываются по вашему личному логину <strong className="text-[#FFAA00]">{profile?.username}</strong>. Вы проверяете черновики и допускаете их к защите перед жюри.
                 </p>
               </div>
               <div className="font-mono text-xs text-[#22D3EE] border border-[#22D3EE]/30 bg-[#050810] px-4 py-2.5 rounded">
@@ -556,15 +638,14 @@ export default function ActivitiesPage() {
           </Card>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Список подопечных */}
             <Card className="lg:col-span-4 p-5 space-y-4 border-white/10 bg-[#060a14]">
               <div className="font-mono text-xs uppercase tracking-widest text-[#22D3EE] flex items-center gap-2">
                 <Users size={15} /> Мои подопечные ({myMentees.length})
               </div>
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {myMentees.length === 0 ? (
-                  <div className="text-xs text-[#8A93A6] py-6 text-center font-mono">
-                    Пока никто не выбрал вас наставником. Ученики могут нажать на ваш ник во вкладке Проектов или в Профиле.
+                  <div className="text-xs text-[#8A93A6] py-6 text-center font-mono leading-relaxed">
+                    Пока никто не привязался по вашему логину. Передайте ученикам никнейм {profile?.username}.
                   </div>
                 ) : (
                   myMentees.map((st) => (
@@ -580,7 +661,6 @@ export default function ActivitiesPage() {
               </div>
             </Card>
 
-            {/* Проекты для кураторской проверки */}
             <Card className="lg:col-span-8 p-5 space-y-4 border-white/10 bg-[#060a14]">
               <div className="font-mono text-xs uppercase tracking-widest text-[#34D399] flex items-center gap-2">
                 <BookOpen size={15} /> Проекты, ожидающие кураторского допуска
@@ -633,7 +713,7 @@ export default function ActivitiesPage() {
         </div>
       )}
 
-      {/* ВКЛАДКА 3: САМОБЫТНАЯ АКТИВНОСТЬ ЖЮРИ — «ЗАКРЫТЫЙ НЕФТЯНОЙ АУДИТ» */}
+      {/* ВКЛАДКА 3: АУДИТ ЖЮРИ */}
       {tab === 'jury_audit' && isJury && (
         <div className="space-y-6">
           <Card className="p-6 border-[#FFAA00]/40 bg-gradient-to-r from-[#060a14] via-[#211705] to-[#050810]">
@@ -644,7 +724,7 @@ export default function ActivitiesPage() {
                   Пульт Жюри: Закрытый нефтяной аудит и слепая экспертиза
                 </h2>
                 <p className="text-xs text-zinc-300">
-                  Оценивайте инженерные проекты по 4 взвешенным критериям ХМАО-Югры. Ваш вердикт формирует официальный рейтинг проекта.
+                  Оценивайте инженерные проекты по 4 критериям ХМАО-Югры. Ваш вердикт формирует официальный рейтинг разработки.
                 </p>
               </div>
               <Badge color="purple">
@@ -756,7 +836,7 @@ export default function ActivitiesPage() {
       {/* ВКЛАДКА 5: КАРТА ХМАО */}
       {tab === 'map' && <HmaoEcoMap />}
 
-      {/* МОДАЛКА СОЗДАНИЯ ПРОЕКТА */}
+      {/* МОДАЛКА СОЗДАНИЯ ПРОЕКТА: С ПЕРСОНАЛЬНЫМ ВВОДОМ КУРАТОРА */}
       <Modal isOpen={createOpen} onClose={() => setCreateOpen(false)} title="Подать инженерный проект на защиту">
         <form onSubmit={(e) => createProjectMutation.mutate(e)} className="space-y-4">
           <Input
@@ -776,20 +856,20 @@ export default function ActivitiesPage() {
 
           <div>
             <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1">
-              Выберите научного наставника (куратора)
+              Куратор проекта (логин наставника)
             </label>
-            <select
-              value={projForm.mentor_id}
-              onChange={(e) => setProjForm({ ...projForm, mentor_id: e.target.value })}
-              className="w-full bg-[#050810] border border-white/15 p-2.5 text-xs text-white rounded"
-            >
-              <option value="">— Без куратора (прямая подача) —</option>
-              {mentorsList.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.full_name} ({m.username})
-                </option>
-              ))}
-            </select>
+            <Input
+              placeholder={
+                currentMentorObj
+                  ? `По умолчанию: ${currentMentorObj.username}`
+                  : 'Введите @username куратора (необязательно)'
+              }
+              value={projForm.mentor_username}
+              onChange={(e) => setProjForm({ ...projForm, mentor_username: e.target.value })}
+            />
+            <span className="text-[10px] text-[#8A93A6] mt-1 block">
+              Если оставить пустым, проект закрепится за вашим текущим привязанным наставником.
+            </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
