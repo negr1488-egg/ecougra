@@ -66,7 +66,7 @@ export default function ChatPage() {
   const [msgSearch, setMsgSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
 
-  // Состояния модалки создания чата с добавлением людей по @username
+  // Модалка создания чата с добавлением людей по @username
   const [newChatModal, setNewChatModal] = useState(false);
   const [newChatTitle, setNewChatTitle] = useState('');
   const [inviteSearch, setInviteSearch] = useState('');
@@ -74,6 +74,7 @@ export default function ChatPage() {
   const [isCreatingChat, setIsCreatingChat] = useState(false);
   const isCreatingChatRef = useRef(false);
 
+  // Хранилище времени последнего прочтения для точного подсчета бейджей
   const [lastReadMap, setLastReadMap] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('ugra_chat_last_read') || '{}');
@@ -108,6 +109,7 @@ export default function ChatPage() {
   const bottomRef = useRef(null);
   const channelRef = useRef(null);
 
+  // Отмечаем активный чат прочитанным
   const markChatAsRead = (chatId) => {
     if (!chatId) return;
     const nowIso = new Date().toISOString();
@@ -146,7 +148,7 @@ export default function ChatPage() {
   const deleteChatMutation = useMutation({
     mutationFn: async (chatId) => {
       const isDefault = DEFAULT_CHATS.some((d) => d.id === chatId);
-      if (isDefault) throw new Error('Официальные системные каналы нельзя удалить (можно скрыть в архив)');
+      if (isDefault) throw new Error('Системные каналы нельзя удалить (можно скрыть в архив)');
 
       const { error } = await supabase
         .from('chats')
@@ -159,7 +161,7 @@ export default function ChatPage() {
       return chatId;
     },
     onSuccess: (deletedId) => {
-      queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
+      queryClient.invalidateQueries({ queryKey: ['chats_list_v11'] });
       if (activeChatId === deletedId) {
         setActiveChatId(DEFAULT_CHATS[0].id);
       }
@@ -170,7 +172,7 @@ export default function ChatPage() {
 
   // 1. Загрузка списка комнат со строгой дедупликацией
   const { data: chats = DEFAULT_CHATS } = useQuery({
-    queryKey: ['chats_list_v10', user?.id],
+    queryKey: ['chats_list_v11', user?.id],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -182,7 +184,6 @@ export default function ChatPage() {
         const activeChats = data.filter((c) => !c.deleted_at);
         const combined = [...DEFAULT_CHATS, ...activeChats];
 
-        // Убираем любые возможные дубли по ID и дублирующиеся личные чаты с одним и тем же названием
         const seenIds = new Set();
         const seenDirectTitles = new Set();
         const uniqueChats = [];
@@ -205,9 +206,9 @@ export default function ChatPage() {
     }
   });
 
-  // 2. Подсчёт непрочитанных сообщений по всем чатам
+  // 2. Точный подсчёт непрочитанных сообщений по каждому чату
   const { data: allRecentMessages = [] } = useQuery({
-    queryKey: ['chat_unread_counts_v10', user?.id],
+    queryKey: ['chat_unread_counts_v11', user?.id],
     enabled: Boolean(user?.id),
     queryFn: async () => {
       const { data } = await supabase
@@ -215,7 +216,7 @@ export default function ChatPage() {
         .select('id, chat_id, author_id, created_at, deleted_at')
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
-        .limit(300);
+        .limit(200);
       return data || [];
     }
   });
@@ -238,7 +239,7 @@ export default function ChatPage() {
 
   // 3. Загрузка профилей
   const { data: allProfiles = [] } = useQuery({
-    queryKey: ['chat_all_profiles_with_roles_v10'],
+    queryKey: ['chat_all_profiles_with_roles_v11'],
     queryFn: async () => {
       const [profRes, urRes] = await Promise.all([
         supabase.from('profiles').select('id, username, full_name, avatar_url, status, xp, is_banned, mentor_id'),
@@ -270,7 +271,7 @@ export default function ChatPage() {
 
   // 4. Загрузка сообщений активного чата
   const { data: rawMessages = [] } = useQuery({
-    queryKey: ['chat_messages_v10', activeChatId],
+    queryKey: ['chat_messages_v11', activeChatId],
     enabled: Boolean(activeChatId),
     queryFn: async () => {
       try {
@@ -300,9 +301,9 @@ export default function ChatPage() {
 
     channel
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => {
-        queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
-        queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v10'] });
-        queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
+        queryClient.invalidateQueries({ queryKey: ['chat_messages_v11', activeChatId] });
+        queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v11'] });
+        queryClient.invalidateQueries({ queryKey: ['chats_list_v11'] });
         markChatAsRead(activeChatId);
       })
       .on('presence', { event: 'sync' }, () => {
@@ -341,7 +342,7 @@ export default function ChatPage() {
     }
   };
 
-  // Безопасное открытие или создание ровно 1 личного чата (без дублей)
+  // Открытие/создание ровно 1 личного чата
   const handleOpenOrCreateDirectChat = async (targetUser) => {
     if (!user?.id || !targetUser?.id || isCreatingChatRef.current) return;
     isCreatingChatRef.current = true;
@@ -358,7 +359,7 @@ export default function ChatPage() {
           .eq('id', roomId)
           .eq('title', 'Личный диалог');
 
-        await queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
+        await queryClient.invalidateQueries({ queryKey: ['chats_list_v11'] });
         setActiveChatId(roomId);
         setSidebarTab('chats');
       }
@@ -371,7 +372,7 @@ export default function ChatPage() {
     }
   };
 
-  // Безопасное создание ровно 1 нового чата/канала с выбранными участниками по @username
+  // Создание ровно 1 нового чата с участниками
   const handleCreateChannelSubmit = async (e) => {
     e.preventDefault();
     if (!newChatTitle.trim() || !user?.id || isCreatingChatRef.current) return;
@@ -380,7 +381,6 @@ export default function ChatPage() {
     setIsCreatingChat(true);
 
     try {
-      // Если выбран ровно 1 человек и название совпадает — можно создать групповой/проектный чат с ним
       const chatType = selectedInviteUsers.length === 1 ? 'direct' : 'project';
 
       const { data: createdChat, error } = await supabase
@@ -392,7 +392,6 @@ export default function ChatPage() {
       if (error) throw error;
 
       if (createdChat) {
-        // Формируем список участников: создатель + все добавленные по @username пользователи
         const memberRows = [
           { chat_id: createdChat.id, user_id: user.id, role: 'owner' },
           ...selectedInviteUsers.map((u) => ({
@@ -404,19 +403,14 @@ export default function ChatPage() {
 
         await supabase.from('chat_members').upsert(memberRows, { onConflict: 'chat_id,user_id' });
 
-        await queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
+        await queryClient.invalidateQueries({ queryKey: ['chats_list_v11'] });
         setActiveChatId(createdChat.id);
         setSidebarTab('chats');
         setNewChatModal(false);
         setNewChatTitle('');
         setSelectedInviteUsers([]);
         setInviteSearch('');
-        toast(
-          selectedInviteUsers.length > 0
-            ? `Чат создан! Добавлено участников: ${selectedInviteUsers.length}`
-            : 'Канал успешно создан!',
-          'success'
-        );
+        toast('Канал успешно создан!', 'success');
       }
     } catch (err) {
       toast(err.message || 'Ошибка создания канала', 'error');
@@ -428,7 +422,7 @@ export default function ChatPage() {
     }
   };
 
-  // Отправка и редактирование сообщения
+  // Отправка сообщения
   const sendMutation = useMutation({
     mutationFn: async ({ isEdit, content, editId }) => {
       if (profile?.is_banned) {
@@ -453,8 +447,8 @@ export default function ChatPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
-      queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v10'] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v11', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v11'] });
       markChatAsRead(activeChatId);
       setText('');
       setEditingMsg(null);
@@ -483,7 +477,7 @@ export default function ChatPage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v11', activeChatId] });
       toast('Сообщение удалено', 'info');
     },
     onError: (err) => toast(err.message, 'error')
@@ -500,7 +494,7 @@ export default function ChatPage() {
       return nextBan;
     },
     onSuccess: (nextBan) => {
-      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v10'] });
+      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v11'] });
       toast(nextBan ? 'Пользователь заблокирован в чате' : 'Блокировка снята', 'info');
     },
     onError: (err) => toast(err.message, 'error')
@@ -544,12 +538,12 @@ export default function ChatPage() {
     setReactionMenuMsgId(null);
 
     await supabase.from('chat_messages').update({ reactions: updated }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v11', activeChatId] });
   };
 
   const togglePinMessage = async (msg) => {
     await supabase.from('chat_messages').update({ is_pinned: !msg.is_pinned }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v11', activeChatId] });
     toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Закреплено в шапке канала', 'info');
   };
 
@@ -567,7 +561,7 @@ export default function ChatPage() {
           attachments: [{ name: file.name, url, type: file.type }]
         }
       ]);
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v11', activeChatId] });
       toast('Файл успешно отправлен!', 'success');
     } catch (err) {
       toast(err.message, 'error');
@@ -583,7 +577,6 @@ export default function ChatPage() {
   const activeChatsList = chats.filter((c) => !archivedIds.includes(c.id));
   const archivedChatsList = chats.filter((c) => archivedIds.includes(c.id));
 
-  // Фильтр пользователей для приглашения по @username в модалке создания чата
   const matchingInviteUsers = allProfiles.filter(
     (p) =>
       p.id !== user?.id &&
@@ -1151,7 +1144,7 @@ export default function ChatPage() {
         </form>
       </Modal>
 
-      {/* МОДАЛКА СОЗДАНИЯ ЧАТА С ДОБАВЛЕНИЕМ ЛЮДЕЙ ПО @USERNAME (СОЗДАЁТ РОВНО 1 ЧАТ) */}
+      {/* МОДАЛКА СОЗДАНИЯ ЧАТА (СОЗДАЁТ РОВНО 1 ЧАТ С ПРИГЛАШЕНИЕМ ПО @USERNAME) */}
       <Modal
         isOpen={newChatModal}
         onClose={() => {
@@ -1176,13 +1169,11 @@ export default function ChatPage() {
             />
           </div>
 
-          {/* Выбор участников по @username */}
           <div className="space-y-2">
             <label className="block font-mono text-[10px] uppercase text-[#34D399]">
               Добавить участников по @username (необязательно):
             </label>
 
-            {/* Список уже выбранных людей */}
             {selectedInviteUsers.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pb-1">
                 {selectedInviteUsers.map((u) => (
@@ -1205,7 +1196,6 @@ export default function ChatPage() {
               </div>
             )}
 
-            {/* Поле поиска по @username */}
             <div className="relative">
               <UserPlus size={13} className="absolute left-3 top-2.5 text-[#8A93A6]" />
               <input
@@ -1217,7 +1207,6 @@ export default function ChatPage() {
               />
             </div>
 
-            {/* Выпадающий список найденных пользователей */}
             <div className="max-h-40 overflow-y-auto space-y-1 bg-[#04070e] border border-white/10 rounded-lg p-1.5">
               {matchingInviteUsers.length === 0 ? (
                 <div className="text-[11px] text-[#8A93A6] font-mono py-3 text-center">
