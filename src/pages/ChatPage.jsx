@@ -27,7 +27,9 @@ import {
   ShieldAlert,
   Ban,
   FileText,
-  ExternalLink
+  ExternalLink,
+  UserPlus,
+  X
 } from 'lucide-react';
 
 const EMOJIS = ['👍', '❤️', '🔥', '🌲', '💡', '🎉'];
@@ -56,8 +58,7 @@ export default function ChatPage() {
   const [activeChatId, setActiveChatId] = useState(
     searchParams.get('room') || DEFAULT_CHATS[0].id
   );
-  // Реорганизованные вкладки боковой панели: 'chats' | 'people' | 'archive'
-  const [sidebarTab, setSidebarTab] = useState('chats');
+  const [sidebarTab, setSidebarTab] = useState('chats'); // 'chats' | 'people' | 'archive'
 
   const [text, setText] = useState('');
   const [replyTo, setReplyTo] = useState(null);
@@ -65,7 +66,14 @@ export default function ChatPage() {
   const [msgSearch, setMsgSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
 
-  // Локальная карта времени последнего прочтения каждого чата (для точного счётчика непрочитанных)
+  // Состояния модалки создания чата с добавлением людей по @username
+  const [newChatModal, setNewChatModal] = useState(false);
+  const [newChatTitle, setNewChatTitle] = useState('');
+  const [inviteSearch, setInviteSearch] = useState('');
+  const [selectedInviteUsers, setSelectedInviteUsers] = useState([]);
+  const [isCreatingChat, setIsCreatingChat] = useState(false);
+  const isCreatingChatRef = useRef(false);
+
   const [lastReadMap, setLastReadMap] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('ugra_chat_last_read') || '{}');
@@ -90,21 +98,16 @@ export default function ChatPage() {
   });
   const [reactionMenuMsgId, setReactionMenuMsgId] = useState(null);
 
-  // Состояния для системы жалоб
   const [reportTarget, setReportTarget] = useState(null);
   const [reportCategory, setReportCategory] = useState(REPORT_REASONS[0]);
   const [reportComment, setReportComment] = useState('');
 
-  // Онлайн и индикатор печати
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUser, setTypingUser] = useState(null);
-  const [newChatModal, setNewChatModal] = useState(false);
-  const [newChatTitle, setNewChatTitle] = useState('');
 
   const bottomRef = useRef(null);
   const channelRef = useRef(null);
 
-  // Отмечаем текущий открытый чат как прочитанный
   const markChatAsRead = (chatId) => {
     if (!chatId) return;
     const nowIso = new Date().toISOString();
@@ -121,7 +124,6 @@ export default function ChatPage() {
     }
   }, [activeChatId]);
 
-  // Сохранение архива и мута
   const toggleArchiveChat = (chatId, e) => {
     e?.stopPropagation();
     setArchivedIds((prev) => {
@@ -157,7 +159,7 @@ export default function ChatPage() {
       return chatId;
     },
     onSuccess: (deletedId) => {
-      queryClient.invalidateQueries({ queryKey: ['chats_list_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
       if (activeChatId === deletedId) {
         setActiveChatId(DEFAULT_CHATS[0].id);
       }
@@ -166,9 +168,9 @@ export default function ChatPage() {
     onError: (err) => toast(err.message, 'error')
   });
 
-  // 1. Загрузка списка комнат
+  // 1. Загрузка списка комнат со строгой дедупликацией
   const { data: chats = DEFAULT_CHATS } = useQuery({
-    queryKey: ['chats_list_v9', user?.id],
+    queryKey: ['chats_list_v10', user?.id],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -176,13 +178,27 @@ export default function ChatPage() {
           .select('*')
           .order('created_at', { ascending: true });
         if (error || !data || data.length === 0) return DEFAULT_CHATS;
+
         const activeChats = data.filter((c) => !c.deleted_at);
-        const existingIds = new Set(activeChats.map((c) => c.id));
-        const merged = [
-          ...DEFAULT_CHATS.filter((d) => !existingIds.has(d.id)),
-          ...activeChats
-        ];
-        return merged;
+        const combined = [...DEFAULT_CHATS, ...activeChats];
+
+        // Убираем любые возможные дубли по ID и дублирующиеся личные чаты с одним и тем же названием
+        const seenIds = new Set();
+        const seenDirectTitles = new Set();
+        const uniqueChats = [];
+
+        for (const c of combined) {
+          if (seenIds.has(c.id)) continue;
+          if (c.type === 'direct' && c.title && c.title !== 'Личный диалог') {
+            const directKey = `${c.type}_${c.title.toLowerCase()}`;
+            if (seenDirectTitles.has(directKey)) continue;
+            seenDirectTitles.add(directKey);
+          }
+          seenIds.add(c.id);
+          uniqueChats.push(c);
+        }
+
+        return uniqueChats;
       } catch {
         return DEFAULT_CHATS;
       }
@@ -191,7 +207,7 @@ export default function ChatPage() {
 
   // 2. Подсчёт непрочитанных сообщений по всем чатам
   const { data: allRecentMessages = [] } = useQuery({
-    queryKey: ['chat_unread_counts_v9', user?.id],
+    queryKey: ['chat_unread_counts_v10', user?.id],
     enabled: Boolean(user?.id),
     queryFn: async () => {
       const { data } = await supabase
@@ -220,9 +236,9 @@ export default function ChatPage() {
     return counts;
   }, [allRecentMessages, lastReadMap, activeChatId, user?.id, setUnreadChatCount]);
 
-  // 3. Загрузка профилей вместе с их ролями
+  // 3. Загрузка профилей
   const { data: allProfiles = [] } = useQuery({
-    queryKey: ['chat_all_profiles_with_roles_v9'],
+    queryKey: ['chat_all_profiles_with_roles_v10'],
     queryFn: async () => {
       const [profRes, urRes] = await Promise.all([
         supabase.from('profiles').select('id, username, full_name, avatar_url, status, xp, is_banned, mentor_id'),
@@ -254,7 +270,7 @@ export default function ChatPage() {
 
   // 4. Загрузка сообщений активного чата
   const { data: rawMessages = [] } = useQuery({
-    queryKey: ['chat_messages_v9', activeChatId],
+    queryKey: ['chat_messages_v10', activeChatId],
     enabled: Boolean(activeChatId),
     queryFn: async () => {
       try {
@@ -273,7 +289,7 @@ export default function ChatPage() {
     }
   });
 
-  // 5. Realtime подписка на сообщения, онлайн и печать
+  // 5. Realtime подписка
   useEffect(() => {
     if (!activeChatId) return;
 
@@ -284,9 +300,9 @@ export default function ChatPage() {
 
     channel
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => {
-        queryClient.invalidateQueries({ queryKey: ['chat_messages_v9', activeChatId] });
-        queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v9'] });
-        queryClient.invalidateQueries({ queryKey: ['chats_list_v9'] });
+        queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
+        queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v10'] });
+        queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
         markChatAsRead(activeChatId);
       })
       .on('presence', { event: 'sync' }, () => {
@@ -325,6 +341,93 @@ export default function ChatPage() {
     }
   };
 
+  // Безопасное открытие или создание ровно 1 личного чата (без дублей)
+  const handleOpenOrCreateDirectChat = async (targetUser) => {
+    if (!user?.id || !targetUser?.id || isCreatingChatRef.current) return;
+    isCreatingChatRef.current = true;
+    try {
+      const { data: roomId, error } = await supabase.rpc('get_or_create_direct_chat', {
+        target_user_id: targetUser.id
+      });
+      if (error) throw error;
+
+      if (roomId) {
+        await supabase
+          .from('chats')
+          .update({ title: `${targetUser.full_name || targetUser.username}` })
+          .eq('id', roomId)
+          .eq('title', 'Личный диалог');
+
+        await queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
+        setActiveChatId(roomId);
+        setSidebarTab('chats');
+      }
+    } catch (err) {
+      toast(err.message || 'Не удалось открыть диалог', 'error');
+    } finally {
+      setTimeout(() => {
+        isCreatingChatRef.current = false;
+      }, 600);
+    }
+  };
+
+  // Безопасное создание ровно 1 нового чата/канала с выбранными участниками по @username
+  const handleCreateChannelSubmit = async (e) => {
+    e.preventDefault();
+    if (!newChatTitle.trim() || !user?.id || isCreatingChatRef.current) return;
+
+    isCreatingChatRef.current = true;
+    setIsCreatingChat(true);
+
+    try {
+      // Если выбран ровно 1 человек и название совпадает — можно создать групповой/проектный чат с ним
+      const chatType = selectedInviteUsers.length === 1 ? 'direct' : 'project';
+
+      const { data: createdChat, error } = await supabase
+        .from('chats')
+        .insert([{ type: chatType, title: newChatTitle.trim(), owner_id: user.id }])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      if (createdChat) {
+        // Формируем список участников: создатель + все добавленные по @username пользователи
+        const memberRows = [
+          { chat_id: createdChat.id, user_id: user.id, role: 'owner' },
+          ...selectedInviteUsers.map((u) => ({
+            chat_id: createdChat.id,
+            user_id: u.id,
+            role: 'member'
+          }))
+        ];
+
+        await supabase.from('chat_members').upsert(memberRows, { onConflict: 'chat_id,user_id' });
+
+        await queryClient.invalidateQueries({ queryKey: ['chats_list_v10'] });
+        setActiveChatId(createdChat.id);
+        setSidebarTab('chats');
+        setNewChatModal(false);
+        setNewChatTitle('');
+        setSelectedInviteUsers([]);
+        setInviteSearch('');
+        toast(
+          selectedInviteUsers.length > 0
+            ? `Чат создан! Добавлено участников: ${selectedInviteUsers.length}`
+            : 'Канал успешно создан!',
+          'success'
+        );
+      }
+    } catch (err) {
+      toast(err.message || 'Ошибка создания канала', 'error');
+    } finally {
+      setIsCreatingChat(false);
+      setTimeout(() => {
+        isCreatingChatRef.current = false;
+      }, 600);
+    }
+  };
+
   // Отправка и редактирование сообщения
   const sendMutation = useMutation({
     mutationFn: async ({ isEdit, content, editId }) => {
@@ -350,8 +453,8 @@ export default function ChatPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v9', activeChatId] });
-      queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v10'] });
       markChatAsRead(activeChatId);
       setText('');
       setEditingMsg(null);
@@ -371,7 +474,6 @@ export default function ChatPage() {
     });
   };
 
-  // Удаление сообщения
   const deleteMsgMutation = useMutation({
     mutationFn: async (msgId) => {
       const { error } = await supabase
@@ -381,13 +483,12 @@ export default function ChatPage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v9', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
       toast('Сообщение удалено', 'info');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Быстрый бан нарушителя
   const quickBanMutation = useMutation({
     mutationFn: async (targetUser) => {
       const nextBan = !targetUser.is_banned;
@@ -399,13 +500,12 @@ export default function ChatPage() {
       return nextBan;
     },
     onSuccess: (nextBan) => {
-      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v9'] });
+      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v10'] });
       toast(nextBan ? 'Пользователь заблокирован в чате' : 'Блокировка снята', 'info');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Отправка жалобы
   const submitReportMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -432,7 +532,6 @@ export default function ChatPage() {
     onError: (err) => toast(err.message, 'error')
   });
 
-  // Реакции на сообщения
   const toggleReaction = async (msg, emoji) => {
     const current = msg.reactions || {};
     const usersForEmoji = current[emoji] || [];
@@ -445,17 +544,15 @@ export default function ChatPage() {
     setReactionMenuMsgId(null);
 
     await supabase.from('chat_messages').update({ reactions: updated }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v9', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
   };
 
-  // Закрепление сообщения
   const togglePinMessage = async (msg) => {
     await supabase.from('chat_messages').update({ is_pinned: !msg.is_pinned }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v9', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
     toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Закреплено в шапке канала', 'info');
   };
 
-  // Загрузка файла в чат
   const handleFileAttach = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !user?.id) return;
@@ -470,7 +567,7 @@ export default function ChatPage() {
           attachments: [{ name: file.name, url, type: file.type }]
         }
       ]);
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v9', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v10', activeChatId] });
       toast('Файл успешно отправлен!', 'success');
     } catch (err) {
       toast(err.message, 'error');
@@ -486,22 +583,30 @@ export default function ChatPage() {
   const activeChatsList = chats.filter((c) => !archivedIds.includes(c.id));
   const archivedChatsList = chats.filter((c) => archivedIds.includes(c.id));
 
+  // Фильтр пользователей для приглашения по @username в модалке создания чата
+  const matchingInviteUsers = allProfiles.filter(
+    (p) =>
+      p.id !== user?.id &&
+      !selectedInviteUsers.some((sel) => sel.id === p.id) &&
+      (p.username?.toLowerCase().includes(inviteSearch.toLowerCase()) ||
+        p.full_name?.toLowerCase().includes(inviteSearch.toLowerCase()))
+  );
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
-      {/* ЛЕВАЯ КОЛОНКА: АККУРАТНАЯ НАВИГАЦИЯ ПО ВКЛАДКАМ */}
+      {/* ЛЕВАЯ КОЛОНКА */}
       <Card className="lg:col-span-4 flex flex-col justify-between h-[680px] border-white/10 bg-[#060a14]/95 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.7)] p-5">
         <div className="flex flex-col h-full overflow-hidden space-y-4">
-          {/* Верхняя шапка списка */}
           <div className="flex items-center justify-between">
             <h3 className="font-mono text-xs uppercase tracking-widest text-white font-bold">
               Центр связи Югры
             </h3>
             <Button size="sm" variant="gold" onClick={() => setNewChatModal(true)} className="px-3 py-1.5 rounded">
-              <Plus size={13} /> Новый канал
+              <Plus size={13} /> Создать чат
             </Button>
           </div>
 
-          {/* 3 чистые вкладки без нагромождения */}
+          {/* 3 вкладки */}
           <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#04070f] rounded-lg border border-white/10">
             <button
               onClick={() => setSidebarTab('chats')}
@@ -537,7 +642,7 @@ export default function ChatPage() {
             </button>
           </div>
 
-          {/* ВКЛАДКА 1 и 3: СПИСОК ЧАТОВ ИЛИ АРХИВ */}
+          {/* СПИСОК ЧАТОВ ИЛИ АРХИВ */}
           {(sidebarTab === 'chats' || sidebarTab === 'archive') && (
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
               {(sidebarTab === 'chats' ? activeChatsList : archivedChatsList).length === 0 ? (
@@ -581,7 +686,6 @@ export default function ChatPage() {
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {/* СЧЁТЧИК НЕПРОЧИТАННЫХ СООБЩЕНИЙ */}
                         {unreadCount > 0 && (
                           <span className="px-2 py-0.5 rounded-full bg-[#FFAA00] text-[#050810] font-mono text-[10px] font-bold animate-pulse">
                             +{unreadCount}
@@ -618,7 +722,7 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* ВКЛАДКА 2: ПОИСК УЧАСТНИКОВ И СОЗДАНИЕ ЛИЧНОГО ДИАЛОГА */}
+          {/* ВКЛАДКА ЛЮДИ */}
           {sidebarTab === 'people' && (
             <div className="flex-1 flex flex-col overflow-hidden space-y-3">
               <div className="relative">
@@ -643,23 +747,7 @@ export default function ChatPage() {
                   .map((u) => (
                     <div
                       key={u.id}
-                      onClick={async () => {
-                        const { data: roomId } = await supabase.rpc('get_or_create_direct_chat', {
-                          target_user_id: u.id
-                        });
-                        if (roomId) {
-                          // Обновляем название диалога именем собеседника, если оно стандартное
-                          await supabase
-                            .from('chats')
-                            .update({ title: `${u.full_name || u.username}` })
-                            .eq('id', roomId)
-                            .eq('title', 'Личный диалог');
-
-                          queryClient.invalidateQueries({ queryKey: ['chats_list_v9'] });
-                          setActiveChatId(roomId);
-                          setSidebarTab('chats');
-                        }
-                      }}
+                      onClick={() => handleOpenOrCreateDirectChat(u)}
                       className="p-2.5 rounded-xl border border-white/5 bg-[#050810]/80 hover:border-[#22D3EE]/50 flex items-center justify-between cursor-pointer text-xs transition-all group"
                     >
                       <div className="flex items-center gap-2.5 truncate">
@@ -684,7 +772,6 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* Нижний статус-бар онлайна */}
         <div className="pt-3 border-t border-white/10 font-mono text-[11px] text-[#34D399] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-[#00C853] animate-pulse" />
@@ -696,7 +783,6 @@ export default function ChatPage() {
 
       {/* ПРАВАЯ КОЛОНКА: ОКНО СООБЩЕНИЙ */}
       <Card className="lg:col-span-8 flex flex-col justify-between h-[680px] relative border-white/10 bg-[#060a14]/95 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.7)] p-5">
-        {/* Шапка активного канала */}
         <div className="border-b border-white/10 pb-3.5 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -753,7 +839,6 @@ export default function ChatPage() {
             </div>
           </div>
 
-          {/* Закрепленное сообщение в шапке */}
           {pinnedMessages.length > 0 && (
             <div className="p-2.5 rounded-lg bg-[#FFAA00]/10 border border-[#FFAA00]/30 text-xs flex items-center justify-between gap-2">
               <span className="truncate">
@@ -987,7 +1072,6 @@ export default function ChatPage() {
           </div>
         )}
 
-        {/* Форма отправки сообщения */}
         <form onSubmit={handleSendOrEdit} className="pt-3 border-t border-white/10 flex items-center gap-2.5">
           <label
             className="p-3 rounded-lg border border-white/10 text-[#8A93A6] hover:text-white cursor-pointer bg-[#050810] transition-colors"
@@ -1067,36 +1151,111 @@ export default function ChatPage() {
         </form>
       </Modal>
 
-      {/* МОДАЛКА СОЗДАНИЯ КАНАЛА */}
-      <Modal isOpen={newChatModal} onClose={() => setNewChatModal(false)} title="Создать проектный канал">
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            const { data } = await supabase
-              .from('chats')
-              .insert([{ type: 'project', title: newChatTitle.trim(), owner_id: user.id }])
-              .select()
-              .single();
-            if (data) {
-              await supabase.from('chat_members').upsert([{ chat_id: data.id, user_id: user.id, role: 'owner' }]);
-              queryClient.invalidateQueries({ queryKey: ['chats_list_v9'] });
-              setActiveChatId(data.id);
-              setNewChatModal(false);
-              setNewChatTitle('');
-            }
-          }}
-          className="space-y-4"
-        >
-          <input
-            type="text"
-            placeholder="Например: Проектная группа ХМАО-Югра"
-            value={newChatTitle}
-            onChange={(e) => setNewChatTitle(e.target.value)}
-            className="w-full bg-[#050810] border border-white/15 rounded p-3 text-xs text-white"
-            required
-          />
-          <Button type="submit" variant="gold" className="w-full">
-            Создать канал
+      {/* МОДАЛКА СОЗДАНИЯ ЧАТА С ДОБАВЛЕНИЕМ ЛЮДЕЙ ПО @USERNAME (СОЗДАЁТ РОВНО 1 ЧАТ) */}
+      <Modal
+        isOpen={newChatModal}
+        onClose={() => {
+          setNewChatModal(false);
+          setSelectedInviteUsers([]);
+          setInviteSearch('');
+        }}
+        title="Создать новый чат или проектный канал"
+      >
+        <form onSubmit={handleCreateChannelSubmit} className="space-y-4 text-xs">
+          <div>
+            <label className="block font-mono text-[10px] uppercase text-[#8A93A6] mb-1.5">
+              Название канала или чата
+            </label>
+            <input
+              type="text"
+              placeholder="Например: Проектная группа ХМАО-Югра"
+              value={newChatTitle}
+              onChange={(e) => setNewChatTitle(e.target.value)}
+              className="w-full bg-[#050810] border border-white/15 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-[#00C853]"
+              required
+            />
+          </div>
+
+          {/* Выбор участников по @username */}
+          <div className="space-y-2">
+            <label className="block font-mono text-[10px] uppercase text-[#34D399]">
+              Добавить участников по @username (необязательно):
+            </label>
+
+            {/* Список уже выбранных людей */}
+            {selectedInviteUsers.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pb-1">
+                {selectedInviteUsers.map((u) => (
+                  <span
+                    key={u.id}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00C853]/20 border border-[#00C853] text-[#34D399] font-mono text-[11px]"
+                  >
+                    <span>{u.username}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedInviteUsers((prev) => prev.filter((item) => item.id !== u.id))
+                      }
+                      className="hover:text-white"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Поле поиска по @username */}
+            <div className="relative">
+              <UserPlus size={13} className="absolute left-3 top-2.5 text-[#8A93A6]" />
+              <input
+                type="text"
+                value={inviteSearch}
+                onChange={(e) => setInviteSearch(e.target.value)}
+                placeholder="Введите @username или имя участника..."
+                className="w-full bg-[#050810] border border-white/15 rounded-lg pl-8 pr-3 py-2 text-xs text-white focus:outline-none focus:border-[#FFAA00]"
+              />
+            </div>
+
+            {/* Выпадающий список найденных пользователей */}
+            <div className="max-h-40 overflow-y-auto space-y-1 bg-[#04070e] border border-white/10 rounded-lg p-1.5">
+              {matchingInviteUsers.length === 0 ? (
+                <div className="text-[11px] text-[#8A93A6] font-mono py-3 text-center">
+                  Участники не найдены
+                </div>
+              ) : (
+                matchingInviteUsers.slice(0, 15).map((u) => (
+                  <div
+                    key={u.id}
+                    onClick={() => {
+                      setSelectedInviteUsers((prev) => [...prev, u]);
+                      if (!newChatTitle.trim()) {
+                        setNewChatTitle(`Диалог с ${u.full_name || u.username}`);
+                      }
+                    }}
+                    className="p-2 rounded-lg hover:bg-white/5 flex items-center justify-between cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <Avatar src={u.avatar_url} username={u.username} size="sm" />
+                      <div className="truncate">
+                        <span className="font-mono text-[#FFAA00] font-semibold">{u.username}</span>
+                        <span className="text-[#8A93A6] ml-2 text-[11px]">{u.full_name}</span>
+                      </div>
+                    </div>
+                    <span className="font-mono text-[10px] text-[#34D399] shrink-0">+ Добавить</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <Button
+            type="submit"
+            variant="gold"
+            disabled={isCreatingChat}
+            className="w-full justify-center"
+          >
+            {isCreatingChat ? 'Создание...' : 'Создать чат'}
           </Button>
         </form>
       </Modal>

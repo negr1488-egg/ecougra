@@ -1,5 +1,5 @@
 // src/components/layout/AppShell.jsx
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
 import { useAuth } from '../../context/AuthContext';
@@ -33,9 +33,29 @@ export default function AppShell() {
   const [cookieAccepted, setCookieAccepted] = useState(() => localStorage.getItem('ugra_cookie_ok') === '1');
   const navigate = useNavigate();
 
-  const visibleNotifs = notifications
-    .filter((n) => !n.deleted_at && !deletedNotifIds.includes(n.id))
-    .filter((n) => (notifFilter === 'unread' ? !n.read_at : true));
+  // Строгая дедупликация уведомлений при рендере
+  const visibleNotifs = useMemo(() => {
+    const seenIds = new Set();
+    const seenContentKeys = new Set();
+    const unique = [];
+
+    for (const n of notifications) {
+      if (!n || n.deleted_at || deletedNotifIds.includes(n.id)) continue;
+      if (notifFilter === 'unread' && n.read_at) continue;
+      if (seenIds.has(n.id)) continue;
+
+      const contentKey = n.payload?.message_id
+        ? `msg_${n.payload.message_id}`
+        : `${n.type}_${n.sender_name || ''}_${n.payload?.preview || ''}_${(n.created_at || '').slice(0, 19)}`;
+
+      if (seenContentKeys.has(contentKey)) continue;
+
+      seenIds.add(n.id);
+      seenContentKeys.add(contentKey);
+      unique.push(n);
+    }
+    return unique;
+  }, [notifications, deletedNotifIds, notifFilter]);
 
   const unreadNotifCount = visibleNotifs.filter((n) => !n.read_at).length;
 
@@ -164,7 +184,7 @@ export default function AppShell() {
               )}
             </button>
 
-            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ С НАСТОЯЩИМ ИМЕНЕМ И АВАТАРОМ ОТПРАВИТЕЛЯ */}
+            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ БЕЗ ДУБЛЕЙ */}
             {notifOpen && (
               <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#080d1a]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3 rounded-xl">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">

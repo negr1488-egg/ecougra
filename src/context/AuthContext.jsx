@@ -4,6 +4,31 @@ import { supabase, logActivityAndAwardXp } from '../lib/supabaseClient';
 
 const AuthContext = createContext(null);
 
+// Функция удаления дубликатов уведомлений
+function deduplicateNotifications(list) {
+  const seenIds = new Set();
+  const seenMsgKeys = new Set();
+  const result = [];
+
+  for (const n of list) {
+    if (!n || !n.id) continue;
+    if (seenIds.has(n.id)) continue;
+
+    // Если уведомление привязано к конкретному сообщению или событию за ту же секунду
+    const msgId = n.payload?.message_id;
+    const dedupKey = msgId
+      ? `msg_${msgId}`
+      : `${n.type}_${n.sender_id || ''}_${n.payload?.preview || ''}_${(n.created_at || '').slice(0, 19)}`;
+
+    if (seenMsgKeys.has(dedupKey)) continue;
+
+    seenIds.add(n.id);
+    seenMsgKeys.add(dedupKey);
+    result.push(n);
+  }
+  return result;
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -20,7 +45,7 @@ export function AuthProvider({ children }) {
 
     const profMap = Object.fromEntries((allProfs || []).map((p) => [p.id, p]));
 
-    return rawNotifs.map((n) => {
+    const enriched = rawNotifs.map((n) => {
       const senderId = n.sender_id || n.payload?.sender_id || n.payload?.author_id;
       const senderObj = senderId ? profMap[senderId] : null;
       const resolvedName =
@@ -40,6 +65,8 @@ export function AuthProvider({ children }) {
         sender_avatar: resolvedAvatar
       };
     });
+
+    return deduplicateNotifications(enriched);
   }, []);
 
   const fetchUserProfileAndRoles = useCallback(async (authUser) => {
@@ -130,14 +157,14 @@ export function AuthProvider({ children }) {
 
       setRoles(roleList.length ? roleList : ['student']);
 
-      // 4. Загружаем уведомления и обогащаем их реальными именами отправителей из profiles
+      // 4. Загружаем уведомления без дублей
       const { data: notifs } = await supabase
         .from('notifications')
         .select('*')
         .eq('user_id', authUser.id)
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
-        .limit(25);
+        .limit(30);
 
       const enriched = await enrichNotificationsWithSenders(notifs || []);
       setNotifications(enriched);
@@ -165,25 +192,33 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe();
   }, [fetchUserProfileAndRoles]);
 
-  // Realtime-подписка на новые уведомления с подгрузкой имени отправителя
+  // Realtime-подписка на новые уведомления со строгой защитой от дублирования
   useEffect(() => {
     if (!session?.user?.id) return;
     const channel = supabase
-      .channel(`notifs_${session.user.id}`)
+      .channel(`notifs_unique_${session.user.id}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${session.user.id}` },
         async (payload) => {
           const [enrichedNew] = await enrichNotificationsWithSenders([payload.new]);
-          setNotifications((prev) => [enrichedNew || payload.new, ...prev]);
-          if (payload.new.type === 'chat_message' || payload.new.type === 'new_message') {
+          const incoming = enrichedNew || payload.new;
+
+          setNotifications((prev) => {
+            if (prev.some((item) => item.id === incoming.id)) return prev;
+            return deduplicateNotifications([incoming, ...prev]);
+          });
+
+          if (incoming.type === 'chat_message' || incoming.type === 'new_message') {
             setUnreadChatCount((c) => c + 1);
           }
         }
       )
       .subscribe();
 
-    return () => supabase.removeChannel(channel);
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [session?.user?.id, enrichNotificationsWithSenders]);
 
   const markNotificationsRead = async () => {
