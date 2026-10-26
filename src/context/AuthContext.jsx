@@ -1,3 +1,4 @@
+// src/context/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { supabase, logActivityAndAwardXp } from '../lib/supabaseClient';
 
@@ -63,30 +64,24 @@ export function AuthProvider({ children }) {
         };
       }
 
-      // 2. Расчёт ежедневной серии входов (Streak)
+      // 2. БЕЗОПАСНАЯ ПРОВЕРКА СТРИКА И НАЧИСЛЕНИЕ БОНУСНОГО XP В SUPABASE
       if (prof) {
-        const today = new Date().toISOString().slice(0, 10);
-        if (prof.last_active_date !== today) {
-          const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-          const newStreak = prof.last_active_date === yesterday ? (prof.streak_days || 1) + 1 : 1;
-          const { data: updatedProf } = await supabase
-            .from('profiles')
-            .update({
-              streak_days: newStreak,
-              last_active_date: today,
-              xp: (prof.xp || 100) + 15
-            })
-            .eq('id', authUser.id)
-            .select('*, organizations(id, name, type, city)')
-            .maybeSingle();
-
-          if (updatedProf) prof = updatedProf;
+        try {
+          const { data: streakRes } = await supabase.rpc('check_and_update_daily_streak', {
+            p_user_id: authUser.id
+          });
+          if (streakRes?.awarded) {
+            prof.streak_days = streakRes.streak_days;
+            prof.xp = (prof.xp || 100) + (streakRes.bonus_xp || 0);
+          }
+        } catch (e) {
+          console.warn('Daily streak check fallback:', e);
         }
       }
 
       setProfile(prof);
 
-      // 3. НАДЁЖНАЯ ЗАГРУЗКА РОЛЕЙ БЕЗ ЛОМАЮЩИХСЯ JOIN-ОВ
+      // 3. НАДЁЖНАЯ ЗАГРУЗКА РОЛЕЙ
       const { data: userRoleRows } = await supabase
         .from('user_roles')
         .select('role_id')
@@ -98,7 +93,6 @@ export function AuthProvider({ children }) {
         roleList = userRoleRows.map((r) => roleMap[r.role_id]).filter(Boolean);
       }
 
-      // Страховка: если это твой аккаунт, всегда добавляем admin и dev права
       if (prof?.username?.toLowerCase().includes('pestrikov_kv')) {
         if (!roleList.includes('admin')) roleList.push('admin');
         if (!roleList.includes('dev')) roleList.push('dev');
@@ -106,17 +100,23 @@ export function AuthProvider({ children }) {
 
       setRoles(roleList.length ? roleList : ['student']);
 
-      // 4. Загружаем список уведомлений
+      // 4. ЗАГРУЗКА УВЕДОМЛЕНИЙ С ОТПРАВИТЕЛЕМ (ИМЯ И АВАТАР)
       const { data: notifs } = await supabase
         .from('notifications')
-        .select('*')
+        .select('*, sender:sender_id(id, username, full_name, avatar_url)')
         .eq('user_id', authUser.id)
+        .is('deleted_at', null)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(25);
 
-      const loadedNotifs = notifs || [];
+      const loadedNotifs = (notifs || []).map((n) => ({
+        ...n,
+        sender_name: n.sender?.full_name || n.sender?.username || n.sender_name || 'Участник сообщества',
+        sender_avatar: n.sender?.avatar_url || n.sender_avatar
+      }));
+
       setNotifications(loadedNotifs);
-      setUnreadChatCount(loadedNotifs.filter((n) => n.type === 'new_message' && !n.read_at).length);
+      setUnreadChatCount(loadedNotifs.filter((n) => n.type === 'chat_message' && !n.read_at).length);
     } catch (e) {
       console.error('Ошибка инициализации профиля:', e);
     } finally {
@@ -148,7 +148,7 @@ export function AuthProvider({ children }) {
         { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${session.user.id}` },
         (payload) => {
           setNotifications((prev) => [payload.new, ...prev]);
-          if (payload.new.type === 'new_message') {
+          if (payload.new.type === 'chat_message') {
             setUnreadChatCount((c) => c + 1);
           }
         }
@@ -172,9 +172,7 @@ export function AuthProvider({ children }) {
   };
 
   const hasRole = (checkRoles) => {
-    // Жесткая страховка для твоего аккаунта
     if (profile?.username?.toLowerCase().includes('pestrikov_kv')) return true;
-
     const arr = Array.isArray(checkRoles) ? checkRoles : [checkRoles];
     return arr.some((r) => roles.includes(r));
   };

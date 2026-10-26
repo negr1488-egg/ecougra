@@ -1,3 +1,4 @@
+// src/pages/ProfilePage.jsx
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -31,7 +32,10 @@ import {
   GraduationCap,
   School,
   ExternalLink,
-  Share2
+  Share2,
+  GitCommit,
+  CheckCircle2,
+  Lock
 } from 'lucide-react';
 
 const STATUS_OPTIONS = [
@@ -41,6 +45,16 @@ const STATUS_OPTIONS = [
   { value: 'offline', label: 'Невидимка (Офлайн)', color: 'zinc' }
 ];
 
+const MILESTONES_TREE = [
+  { level: 1, title: 'Юный натуралист Югры', xpReq: 0, perk: 'Доступ к чатам, базе знаний и обучающим курсам' },
+  { level: 5, title: 'Исследователь тайги', xpReq: 1000, perk: 'Право подачи инженерных и экологических проектов' },
+  { level: 10, title: 'Эко-технолог промысла', xpReq: 2500, perk: 'Доступ к интерактивным 3D-симуляторам бурения' },
+  { level: 20, title: 'Инженер-эколог ХМАО', xpReq: 5000, perk: 'Генерация официального PDF-сертификата отличия' },
+  { level: 30, title: 'Хранитель недр Самотлора', xpReq: 7500, perk: 'Право голосовать за проекты в экспертном совете' },
+  { level: 40, title: 'Архитектор Зелёной Югры', xpReq: 10000, perk: 'Золотая рамка профиля и статус Наставника' },
+  { level: 50, title: 'Легенда Нефтяного края', xpReq: 12500, perk: 'Высшая награда Оргкомитета региона' }
+];
+
 export default function ProfilePage() {
   const { username } = useParams();
   const { user, profile: myProfile, refreshProfile } = useAuth();
@@ -48,26 +62,22 @@ export default function ProfilePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState('wall');
+  const [activeTab, setActiveTab] = useState('wall'); // wall | tree | projects | activity
   const [wallContent, setWallContent] = useState('');
   const [wallLink, setWallLink] = useState('');
 
-  // Состояние открытых комментариев для постов
   const [openCommentsPostId, setOpenCommentsPostId] = useState(null);
   const [commentInput, setCommentInput] = useState('');
 
-  // Наставничество
   const [mentorInput, setMentorInput] = useState('');
   const [studentInput, setStudentInput] = useState('');
 
-  // Модальные окна
   const [editOpen, setEditOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [certOpen, setCertOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState('');
 
-  // Анкета исследователя
   const [profileForm, setProfileForm] = useState({
     full_name: '',
     bio: '',
@@ -88,7 +98,7 @@ export default function ProfilePage() {
 
   // Загружаем профиль
   const { data: profileBundle, isLoading } = useQuery({
-    queryKey: ['profile_bundle_v13', username || myProfile?.id],
+    queryKey: ['profile_bundle_v16', username || myProfile?.id],
     enabled: Boolean(username || myProfile?.id),
     queryFn: async () => {
       let target = myProfile;
@@ -141,19 +151,24 @@ export default function ProfilePage() {
     profileBundle?.highestRole?.name === 'admin' ||
     profileBundle?.highestRole?.name === 'dev';
 
-  // 1. ЗАГРУЗКА wall_posts ВМЕСТЕ С КОММЕНТАРИЯМИ
+  // 1. ЗАГРУЗКА wall_posts + wall_comments + wall_likes (ИЗ СУЩЕСТВУЮЩЕЙ ТАБЛИЦЫ wall_likes)
   const { data: wallPosts = [], isLoading: wallLoading } = useQuery({
-    queryKey: ['profile_wall_posts_v13', targetProfile?.id],
+    queryKey: ['profile_wall_posts_v16', targetProfile?.id, user?.id],
     enabled: Boolean(targetProfile?.id),
     queryFn: async () => {
       try {
-        const [postsRes, commentsRes, profsRes] = await Promise.all([
+        const [postsRes, commentsRes, profsRes, myLikesRes] = await Promise.all([
           supabase.from('wall_posts').select('*').eq('author_id', targetProfile.id),
           supabase.from('wall_comments').select('*').order('created_at', { ascending: true }),
-          supabase.from('profiles').select('id, username, full_name, avatar_url')
+          supabase.from('profiles').select('id, username, full_name, avatar_url'),
+          user?.id
+            ? supabase.from('wall_likes').select('post_id').eq('user_id', user.id)
+            : Promise.resolve({ data: [] })
         ]);
 
         const profMap = Object.fromEntries((profsRes.data || []).map((p) => [p.id, p]));
+        const myLikedSet = new Set((myLikesRes.data || []).map((l) => l.post_id));
+
         const commentsByPost = {};
         (commentsRes.data || []).forEach((c) => {
           if (!commentsByPost[c.post_id]) commentsByPost[c.post_id] = [];
@@ -169,6 +184,7 @@ export default function ProfilePage() {
 
         return sorted.map((p) => ({
           ...p,
+          isLiked: myLikedSet.has(p.id),
           comments: commentsByPost[p.id] || []
         }));
       } catch {
@@ -177,7 +193,33 @@ export default function ProfilePage() {
     }
   });
 
-  // 2. ПУБЛИКАЦИЯ В wall_posts
+  // Лайк поста через существующую таблицу wall_likes (постоянный, уникальный, снимается повторным нажатием)
+  const toggleLikeMutation = useMutation({
+    mutationFn: async (post) => {
+      if (!user?.id) throw new Error('Требуется авторизация');
+      checkRateLimit('wall_like_toggle', 300);
+
+      if (post.isLiked) {
+        const { error } = await supabase
+          .from('wall_likes')
+          .delete()
+          .match({ post_id: post.id, user_id: user.id });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('wall_likes')
+          .insert([{ post_id: post.id, user_id: user.id }]);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
+
+  // ПУБЛИКАЦИЯ В wall_posts
   const createWallPostMutation = useMutation({
     mutationFn: async (e) => {
       e.preventDefault();
@@ -204,8 +246,8 @@ export default function ProfilePage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
       setWallContent('');
       setWallLink('');
       toast('Запись опубликована на стене! (+20 XP)', 'success');
@@ -213,7 +255,7 @@ export default function ProfilePage() {
     onError: (err) => toast(err.message, 'error')
   });
 
-  // 3. ДОБАВЛЕНИЕ КОММЕНТАРИЯ К ПОСТУ СТЕНЫ
+  // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
   const addCommentMutation = useMutation({
     mutationFn: async ({ postId, text }) => {
       if (!text.trim() || !user?.id) return;
@@ -229,34 +271,34 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
       setCommentInput('');
       toast('Комментарий добавлен', 'success');
     },
     onError: (err) => toast(err.message, 'error')
   });
 
-  // 4. УДАЛЕНИЕ КОММЕНТАРИЯ
+  // УДАЛЕНИЕ КОММЕНТАРИЯ
   const deleteCommentMutation = useMutation({
     mutationFn: async (commentId) => {
       const { error } = await supabase.from('wall_comments').delete().eq('id', commentId);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
       toast('Комментарий удалён', 'info');
     }
   });
 
-  // 5. УДАЛЕНИЕ ПОСТА
+  // УДАЛЕНИЕ ПОСТА
   const deleteWallPostMutation = useMutation({
     mutationFn: async (postId) => {
       const { error } = await supabase.from('wall_posts').delete().eq('id', postId);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v10'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
       toast('Запись удалена со стены', 'info');
     },
     onError: (err) => toast(err.message, 'error')
@@ -298,7 +340,7 @@ export default function ProfilePage() {
       return foundMentor;
     },
     onSuccess: (mentor) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
       if (refreshProfile) refreshProfile();
       setMentorInput('');
       toast(`Наставник ${mentor.username} привязан!`, 'success');
@@ -330,7 +372,7 @@ export default function ProfilePage() {
       return foundStudent;
     },
     onSuccess: (student) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
       setStudentInput('');
       toast(`Ученик ${student.username} привязан к вам!`, 'success');
     },
@@ -343,7 +385,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
       toast('Ученик отвязан', 'info');
     }
   });
@@ -354,7 +396,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
       if (refreshProfile) refreshProfile();
       toast('Наставник отвязан', 'info');
     }
@@ -381,7 +423,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
       if (refreshProfile) refreshProfile();
       setEditOpen(false);
       toast('Анкета сохранена!', 'success');
@@ -396,7 +438,7 @@ export default function ProfilePage() {
       toast('Загрузка аватара...', 'info');
       const publicUrl = await uploadFileToStorage('avatars', user.id, file);
       await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
       if (refreshProfile) refreshProfile();
       toast('Аватар обновлён!', 'success');
     } catch (err) {
@@ -407,7 +449,8 @@ export default function ProfilePage() {
   if (isLoading || !profileBundle) return <Skeleton className="h-96 w-full" />;
 
   const { highestRole, mentorObj, menteesList, projects, activities } = profileBundle;
-  const level = Math.floor((targetProfile.xp || 100) / 250) + 1;
+  const userXp = targetProfile.xp || 100;
+  const level = Math.floor(userXp / 250) + 1;
   const badges = Array.isArray(targetProfile.badges) ? targetProfile.badges : ['Пионер Югры'];
   const userStatus = STATUS_OPTIONS.find((s) => s.value === targetProfile.status) || STATUS_OPTIONS[0];
 
@@ -713,9 +756,9 @@ export default function ProfilePage() {
           </Card>
         </div>
 
-        {/* ПРАВАЯ КОЛОНКА: СТЕНА + КОММЕНТАРИИ + ПРОЕКТЫ */}
+        {/* ПРАВАЯ КОЛОНКА: СТЕНА + ИНТЕГРИРОВАННОЕ ДЕРЕВО РАЗВИТИЯ + ПРОЕКТЫ + ИСТОРИЯ */}
         <div className="lg:col-span-8 space-y-5">
-          <div className="flex items-center gap-2 border-b border-white/10 pb-3">
+          <div className="flex flex-wrap items-center gap-2 border-b border-white/10 pb-3">
             <button
               onClick={() => setActiveTab('wall')}
               className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all flex items-center gap-1.5 ${
@@ -725,6 +768,18 @@ export default function ProfilePage() {
               }`}
             >
               <MessageCircle size={14} /> Стена профиля ({wallPosts.length})
+            </button>
+
+            {/* ИНТЕГРИРОВАННАЯ ВКЛАДКА ДЕРЕВА УРОВНЯ */}
+            <button
+              onClick={() => setActiveTab('tree')}
+              className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all flex items-center gap-1.5 ${
+                activeTab === 'tree'
+                  ? 'border-[#FFAA00] bg-[#FFAA00]/15 text-[#FFAA00] font-bold shadow-[0_0_12px_rgba(255,170,0,0.2)]'
+                  : 'border-white/10 text-[#8A93A6] hover:text-white'
+              }`}
+            >
+              <GitCommit size={14} /> Дерево развития
             </button>
 
             <button
@@ -742,7 +797,7 @@ export default function ProfilePage() {
               onClick={() => setActiveTab('activity')}
               className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all flex items-center gap-1.5 ${
                 activeTab === 'activity'
-                  ? 'border-[#FFAA00] bg-[#FFAA00]/15 text-[#FFAA00] font-bold'
+                  ? 'border-white/30 bg-white/10 text-white font-bold'
                   : 'border-white/10 text-[#8A93A6] hover:text-white'
               }`}
             >
@@ -791,6 +846,7 @@ export default function ProfilePage() {
                 wallPosts.map((post) => {
                   const comments = post.comments || [];
                   const isCommentsOpen = openCommentsPostId === post.id;
+                  const isLiked = Boolean(post.isLiked);
 
                   return (
                     <Card key={post.id} className="p-5 space-y-3 bg-[#060a14]/90 border-white/10">
@@ -840,9 +896,21 @@ export default function ProfilePage() {
 
                       <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-[#8A93A6]">
                         <div className="flex items-center gap-3">
-                          <span className="flex items-center gap-1.5 text-[#34D399]">
-                            <Heart size={13} className="fill-[#34D399]" /> {post.likes_count || 0}
-                          </span>
+                          {/* ПОСТОЯННЫЙ ЛАЙК: СОХРАНЯЕТСЯ В wall_likes, СНИМАЕТСЯ ПОВТОРНЫМ КЛИКОМ */}
+                          <button
+                            onClick={() => toggleLikeMutation.mutate(post)}
+                            disabled={toggleLikeMutation.isPending}
+                            className={`px-3 py-1 rounded border font-mono text-xs flex items-center gap-1.5 transition-all ${
+                              isLiked
+                                ? 'border-[#00C853] bg-[#00C853]/20 text-[#34D399] shadow-[0_0_12px_rgba(0,200,83,0.3)]'
+                                : 'border-white/10 text-[#8A93A6] hover:text-white hover:border-white/30'
+                            }`}
+                            title={isLiked ? 'Снять отметку «Нравится»' : 'Поставить отметку «Нравится»'}
+                          >
+                            <Heart size={13} className={isLiked ? 'fill-[#34D399] text-[#34D399]' : ''} />
+                            <span>{post.likes_count || 0}</span>
+                          </button>
+
                           <button
                             onClick={() => setOpenCommentsPostId(isCommentsOpen ? null : post.id)}
                             className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors"
@@ -853,7 +921,7 @@ export default function ProfilePage() {
                         <span>Стена исследователя</span>
                       </div>
 
-                      {/* БЛОК РАСКРЫВАЮЩИХСЯ КОММЕНТАРИЕВ (wall_comments) */}
+                      {/* БЛОК КОММЕНТАРИЕВ */}
                       {isCommentsOpen && (
                         <div className="pt-3 border-t border-white/10 space-y-3">
                           <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
@@ -917,6 +985,65 @@ export default function ProfilePage() {
                 })
               )}
             </div>
+          )}
+
+          {/* ИНТЕГРИРОВАННОЕ ВИЗУАЛЬНОЕ ДЕРЕВО РАЗВИТИЯ УРОВНЯ В ПРОФИЛЕ */}
+          {activeTab === 'tree' && (
+            <Card className="p-6 sm:p-8 border-white/10 bg-[#060a14] space-y-6">
+              <div className="border-b border-white/10 pb-4">
+                <div className="eyebrow">Карьерная лестница и статус исследователя ХМАО</div>
+                <h2 className="text-xl sm:text-2xl font-light text-white flex items-center gap-2.5 mt-1">
+                  <GitCommit size={22} className="text-[#34D399]" />
+                  Дерево развития рангов и уровней
+                </h2>
+                <p className="text-xs text-[#8A93A6] mt-1">
+                  Текущий опыт: <strong className="text-[#34D399] font-mono">{userXp} XP</strong>. 
+                  Вехи активируются по мере публикации отчётов, прохождения курсов и ежедневной серии.
+                </p>
+              </div>
+
+              <div className="relative pl-6 sm:pl-8 space-y-8 before:absolute before:left-3 sm:before:left-4 before:top-3 before:bottom-3 before:w-0.5 before:bg-gradient-to-b before:from-[#00C853] before:via-[#FFAA00] before:to-white/10">
+                {MILESTONES_TREE.map((step) => {
+                  const isUnlocked = userXp >= step.xpReq;
+                  return (
+                    <div key={step.level} className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-3 group">
+                      <div
+                        className={`absolute -left-6 sm:-left-8 top-1.5 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
+                          isUnlocked
+                            ? 'border-[#00C853] bg-[#00C853]/20 text-[#34D399] shadow-[0_0_12px_#00C853]'
+                            : 'border-white/20 bg-[#050810] text-[#8A93A6]'
+                        }`}
+                      >
+                        {isUnlocked ? <CheckCircle2 size={13} /> : <Lock size={11} />}
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-[#FFAA00]">
+                            LVL {step.level}
+                          </span>
+                          <h3 className={`text-sm font-medium ${isUnlocked ? 'text-white' : 'text-[#8A93A6]'}`}>
+                            {step.title}
+                          </h3>
+                          <Badge color={isUnlocked ? 'emerald' : 'zinc'}>
+                            {isUnlocked ? 'Достигнуто' : `${step.xpReq} XP`}
+                          </Badge>
+                        </div>
+                        <div className="text-xs text-[#8A93A6]">{step.perk}</div>
+                      </div>
+
+                      <div className="font-mono text-[11px] text-right shrink-0">
+                        {isUnlocked ? (
+                          <span className="text-[#34D399]">Разблокировано</span>
+                        ) : (
+                          <span className="text-[#8A93A6]">Осталось: {Math.max(0, step.xpReq - userXp)} XP</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
           )}
 
           {/* ВКЛАДКА: ПРОЕКТЫ */}
@@ -1106,7 +1233,27 @@ export default function ProfilePage() {
 
       {/* МОДАЛКА ЖАЛОБЫ */}
       <Modal isOpen={reportOpen} onClose={() => setReportOpen(false)} title={`Жалоба на ${targetProfile.username}`}>
-        <form onSubmit={(e) => reportUserMutation.mutate(e)} className="space-y-4">
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const { error } = await supabase.from('wall_reports').insert([
+              {
+                reporter_id: user.id,
+                target_id: targetProfile.id,
+                reason: reportReason.trim(),
+                status: 'pending'
+              }
+            ]);
+            if (error) {
+              toast(error.message, 'error');
+            } else {
+              setReportOpen(false);
+              setReportReason('');
+              toast('Жалоба передана модераторам!', 'success');
+            }
+          }}
+          className="space-y-4"
+        >
           <textarea
             rows={4}
             value={reportReason}

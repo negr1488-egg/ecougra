@@ -1,3 +1,4 @@
+// src/pages/HomePage.jsx
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -59,17 +60,9 @@ export default function HomePage() {
   const [openCommentsPostId, setOpenCommentsPostId] = useState(null);
   const [commentInput, setCommentInput] = useState('');
 
-  const [likedPostIds, setLikedPostIds] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('ugra_liked_wall_posts') || '[]');
-    } catch {
-      return [];
-    }
-  });
-
   // 1. Загрузка выпусков газеты
   const { data: newsArticles = FALLBACK_NEWS, isLoading: newsLoading } = useQuery({
-    queryKey: ['home_newspaper_v11'],
+    queryKey: ['home_newspaper_v15'],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -86,21 +79,26 @@ export default function HomePage() {
     }
   });
 
-  // 2. ЗАГРУЗКА wall_posts ВМЕСТЕ С КОММЕНТАРИЯМИ (wall_comments)
+  // 2. ЗАГРУЗКА wall_posts ВМЕСТЕ С КОММЕНТАРИЯМИ И ЛАЙКАМИ ИЗ ТАБЛИЦЫ wall_likes
   const { data: posts = [], isLoading: postsLoading } = useQuery({
-    queryKey: ['home_wall_posts_feed_v11'],
+    queryKey: ['home_wall_posts_feed_v15', user?.id],
     queryFn: async () => {
       try {
-        const [postsRes, commentsRes, profsRes, urRes] = await Promise.all([
+        const [postsRes, commentsRes, profsRes, urRes, myLikesRes] = await Promise.all([
           supabase.from('wall_posts').select('*').limit(30),
           supabase.from('wall_comments').select('*').order('created_at', { ascending: true }),
           supabase.from('profiles').select('id, username, full_name, avatar_url, status'),
-          supabase.from('user_roles').select('user_id, role_id')
+          supabase.from('user_roles').select('user_id, role_id'),
+          user?.id
+            ? supabase.from('wall_likes').select('post_id').eq('user_id', user.id)
+            : Promise.resolve({ data: [] })
         ]);
 
         if (postsRes.error || !postsRes.data) return [];
 
         const profMap = Object.fromEntries((profsRes.data || []).map((p) => [p.id, p]));
+        const myLikedSet = new Set((myLikesRes.data || []).map((l) => l.post_id));
+
         const roleMap = {};
         (urRes.data || []).forEach((ur) => {
           if (!roleMap[ur.user_id]) roleMap[ur.user_id] = [];
@@ -128,6 +126,7 @@ export default function HomePage() {
             ...p,
             author,
             highestRole,
+            isLiked: myLikedSet.has(p.id),
             comments: commentsByPost[p.id] || []
           };
         });
@@ -165,8 +164,8 @@ export default function HomePage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16'] });
       setPostText('');
       setPostLink('');
       toast('Запись опубликована в ленте сообщества! (+20 XP)', 'success');
@@ -190,8 +189,8 @@ export default function HomePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16'] });
       setCommentInput('');
       toast('Комментарий добавлен', 'success');
     },
@@ -205,26 +204,39 @@ export default function HomePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v13'] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16'] });
       toast('Комментарий удалён', 'info');
     }
   });
 
-  // 6. Лайки к постам
-  const handleToggleLike = async (post) => {
-    const alreadyLiked = likedPostIds.includes(post.id);
-    const nextLikes = alreadyLiked ? Math.max(0, (post.likes_count || 0) - 1) : (post.likes_count || 0) + 1;
-    const updatedIds = alreadyLiked
-      ? likedPostIds.filter((id) => id !== post.id)
-      : [...likedPostIds, post.id];
+  // 6. ПОСТОЯННЫЕ УНИКАЛЬНЫЕ ЛАЙКИ ЧЕРЕЗ ТАБЛИЦУ wall_likes
+  const toggleLikeMutation = useMutation({
+    mutationFn: async (post) => {
+      if (!user?.id) throw new Error('Войдите, чтобы поставить отметку «Нравится»');
+      checkRateLimit('home_like_toggle', 300);
 
-    setLikedPostIds(updatedIds);
-    localStorage.setItem('ugra_liked_wall_posts', JSON.stringify(updatedIds));
-
-    await supabase.from('wall_posts').update({ likes_count: nextLikes }).eq('id', post.id);
-    queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
-  };
+      if (post.isLiked) {
+        // Снимаем лайк
+        const { error } = await supabase
+          .from('wall_likes')
+          .delete()
+          .match({ post_id: post.id, user_id: user.id });
+        if (error) throw error;
+      } else {
+        // Ставим постоянный лайк
+        const { error } = await supabase
+          .from('wall_likes')
+          .insert([{ post_id: post.id, user_id: user.id }]);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16'] });
+    },
+    onError: (err) => toast(err.message, 'error')
+  });
 
   const leadArticle = newsArticles[0] || FALLBACK_NEWS[0];
   const sideArticles = newsArticles.slice(1, 5);
@@ -326,7 +338,7 @@ export default function HomePage() {
         </Card>
       </section>
 
-      {/* 3. ЛЕНТА СООБЩЕСТВА С КОММЕНТАРИЯМИ */}
+      {/* 3. ЛЕНТА СООБЩЕСТВА С КОММЕНТАРИЯМИ И ПОСТОЯННЫМИ ЛАЙКАМИ */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -374,7 +386,7 @@ export default function HomePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {posts.map((p) => {
               const uname = p.author?.username || '@исследователь';
-              const isLiked = likedPostIds.includes(p.id);
+              const isLiked = Boolean(p.isLiked);
               const roleBadge = p.highestRole || { label: 'Исследователь', color: 'emerald' };
               const comments = p.comments || [];
               const isCommentsOpen = openCommentsPostId === p.id;
@@ -422,15 +434,18 @@ export default function HomePage() {
                   {/* Панель лайков и кнопки комментариев */}
                   <div className="pt-3 border-t border-white/10 flex items-center justify-between">
                     <div className="flex items-center gap-3">
+                      {/* КНОПКА ЛАЙКА: сохраняется в wall_likes в Supabase, не сбрасывается по дням, повторный клик снимает */}
                       <button
-                        onClick={() => handleToggleLike(p)}
+                        onClick={() => toggleLikeMutation.mutate(p)}
+                        disabled={toggleLikeMutation.isPending}
                         className={`px-3 py-1 rounded border font-mono text-xs flex items-center gap-1.5 transition-all ${
                           isLiked
-                            ? 'border-[#00C853] bg-[#00C853]/15 text-[#34D399]'
-                            : 'border-white/10 text-[#8A93A6] hover:text-white'
+                            ? 'border-[#00C853] bg-[#00C853]/20 text-[#34D399] shadow-[0_0_12px_rgba(0,200,83,0.3)]'
+                            : 'border-white/10 text-[#8A93A6] hover:text-white hover:border-white/30'
                         }`}
+                        title={isLiked ? 'Снять отметку «Нравится»' : 'Поставить отметку «Нравится»'}
                       >
-                        <Heart size={13} className={isLiked ? 'fill-[#34D399]' : ''} />
+                        <Heart size={13} className={isLiked ? 'fill-[#34D399] text-[#34D399]' : ''} />
                         <span>{p.likes_count || 0}</span>
                       </button>
 

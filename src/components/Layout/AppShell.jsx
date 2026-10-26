@@ -1,3 +1,4 @@
+// src/components/layout/AppShell.jsx
 import React, { useState } from 'react';
 import { NavLink, Outlet, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
@@ -95,7 +96,6 @@ export default function AppShell() {
       <header className="sticky top-0 z-40 border-b border-white/10 bg-[#04060c]/85 backdrop-blur-2xl">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            {/* Кнопка-гамбургер для мобильных */}
             <button
               onClick={() => setMobileDrawerOpen(true)}
               className="lg:hidden p-2 border border-white/10 bg-white/[0.02] text-[#8A93A6] hover:text-white"
@@ -115,7 +115,7 @@ export default function AppShell() {
             </div>
           </div>
 
-          {/* НАВИГАЦИЯ ДЛЯ КОМПЬЮТЕРОВ (БЕЗ ИЗМЕНЕНИЙ) */}
+          {/* НАВИГАЦИЯ ДЛЯ КОМПЬЮТЕРОВ */}
           <nav className="hidden lg:flex items-center gap-1">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -163,7 +163,7 @@ export default function AppShell() {
               )}
             </button>
 
-            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ */}
+            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ С ОТОБРАЖЕНИЕМ ИМЕНИ И АВАТАРА ОТПРАВИТЕЛЯ */}
             {notifOpen && (
               <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#080d1a]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
@@ -209,15 +209,31 @@ export default function AppShell() {
                     visibleNotifs.map((n) => (
                       <div
                         key={n.id}
-                        className="p-2.5 border border-white/10 bg-[#050810]/70 text-xs flex items-start justify-between gap-2"
+                        className="p-2.5 border border-white/10 bg-[#050810]/70 text-xs flex items-start justify-between gap-2.5"
                       >
-                        <div className="min-w-0">
-                          <div className="font-mono text-[10px] text-[#34D399] uppercase">{n.type}</div>
-                          <div className="text-zinc-300 mt-0.5 break-words">{n.payload?.preview || 'Событие платформы'}</div>
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          {/* Аватар отправителя */}
+                          <Avatar
+                            src={n.sender_avatar}
+                            username={n.sender_name || '@система'}
+                            size="sm"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                              <span className="text-[#FFAA00] font-semibold truncate">
+                                {n.sender_name || 'Участник'}
+                              </span>
+                              <span className="text-[#34D399] uppercase text-[9px]">({n.type})</span>
+                            </div>
+                            <div className="text-zinc-300 mt-0.5 break-words">
+                              {n.payload?.preview || n.payload?.title || 'Новое событие платформы'}
+                            </div>
+                          </div>
                         </div>
                         <button
                           onClick={() => handleDeleteOneNotif(n.id)}
                           className="text-[#8A93A6] hover:text-red-400 p-1 shrink-0"
+                          title="Удалить"
                         >
                           <X size={13} />
                         </button>
@@ -312,7 +328,7 @@ export default function AppShell() {
         <Outlet />
       </main>
 
-      {/* НИЖНИЙ ПЛАВАЮЩИЙ НАВБАР ДЛЯ ТЕЛЕФОНОВ (BOTTOM NAVIGATION) */}
+      {/* НИЖНИЙ ПЛАВАЮЩИЙ НАВБАР ДЛЯ ТЕЛЕФОНОВ */}
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#060a14]/95 backdrop-blur-2xl border-t border-white/15 px-2 py-1.5 flex items-center justify-around shadow-[0_-10px_25px_rgba(0,0,0,0.7)]">
         {navItems.slice(0, 5).map((item) => {
           const Icon = item.icon;
@@ -335,7 +351,6 @@ export default function AppShell() {
             </NavLink>
           );
         })}
-        {/* Кнопка Профиль в нижнем баре */}
         <NavLink
           to="/profile"
           className={({ isActive }) =>
