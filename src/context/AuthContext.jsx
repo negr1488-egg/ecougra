@@ -12,6 +12,36 @@ export function AuthProvider({ children }) {
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
+  const enrichNotificationsWithSenders = useCallback(async (rawNotifs) => {
+    if (!rawNotifs || rawNotifs.length === 0) return [];
+    const { data: allProfs } = await supabase
+      .from('profiles')
+      .select('id, username, full_name, avatar_url');
+
+    const profMap = Object.fromEntries((allProfs || []).map((p) => [p.id, p]));
+
+    return rawNotifs.map((n) => {
+      const senderId = n.sender_id || n.payload?.sender_id || n.payload?.author_id;
+      const senderObj = senderId ? profMap[senderId] : null;
+      const resolvedName =
+        senderObj?.full_name ||
+        senderObj?.username ||
+        n.sender_name ||
+        n.payload?.sender_name ||
+        n.payload?.username ||
+        'Система Югра.Нефть';
+      const resolvedAvatar =
+        senderObj?.avatar_url || n.sender_avatar || n.payload?.sender_avatar || null;
+
+      return {
+        ...n,
+        sender_name: resolvedName,
+        sender_username: senderObj?.username || null,
+        sender_avatar: resolvedAvatar
+      };
+    });
+  }, []);
+
   const fetchUserProfileAndRoles = useCallback(async (authUser) => {
     if (!authUser) {
       setProfile(null);
@@ -22,7 +52,7 @@ export function AuthProvider({ children }) {
     }
 
     try {
-      // 1. Извлекаем профиль вместе с организацией
+      // 1. Извлекаем профиль
       let { data: prof, error: profError } = await supabase
         .from('profiles')
         .select('*, organizations(id, name, type, city)')
@@ -64,7 +94,7 @@ export function AuthProvider({ children }) {
         };
       }
 
-      // 2. БЕЗОПАСНАЯ ПРОВЕРКА СТРИКА И НАЧИСЛЕНИЕ БОНУСНОГО XP В SUPABASE
+      // 2. Ежедневный стрик и бонусный XP
       if (prof) {
         try {
           const { data: streakRes } = await supabase.rpc('check_and_update_daily_streak', {
@@ -75,13 +105,13 @@ export function AuthProvider({ children }) {
             prof.xp = (prof.xp || 100) + (streakRes.bonus_xp || 0);
           }
         } catch (e) {
-          console.warn('Daily streak check fallback:', e);
+          console.warn('Daily streak fallback:', e);
         }
       }
 
       setProfile(prof);
 
-      // 3. НАДЁЖНАЯ ЗАГРУЗКА РОЛЕЙ
+      // 3. Роли
       const { data: userRoleRows } = await supabase
         .from('user_roles')
         .select('role_id')
@@ -100,29 +130,26 @@ export function AuthProvider({ children }) {
 
       setRoles(roleList.length ? roleList : ['student']);
 
-      // 4. ЗАГРУЗКА УВЕДОМЛЕНИЙ С ОТПРАВИТЕЛЕМ (ИМЯ И АВАТАР)
+      // 4. Загружаем уведомления и обогащаем их реальными именами отправителей из profiles
       const { data: notifs } = await supabase
         .from('notifications')
-        .select('*, sender:sender_id(id, username, full_name, avatar_url)')
+        .select('*')
         .eq('user_id', authUser.id)
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
         .limit(25);
 
-      const loadedNotifs = (notifs || []).map((n) => ({
-        ...n,
-        sender_name: n.sender?.full_name || n.sender?.username || n.sender_name || 'Участник сообщества',
-        sender_avatar: n.sender?.avatar_url || n.sender_avatar
-      }));
-
-      setNotifications(loadedNotifs);
-      setUnreadChatCount(loadedNotifs.filter((n) => n.type === 'chat_message' && !n.read_at).length);
+      const enriched = await enrichNotificationsWithSenders(notifs || []);
+      setNotifications(enriched);
+      setUnreadChatCount(
+        enriched.filter((n) => (n.type === 'chat_message' || n.type === 'new_message') && !n.read_at).length
+      );
     } catch (e) {
       console.error('Ошибка инициализации профиля:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [enrichNotificationsWithSenders]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: s } }) => {
@@ -138,7 +165,7 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe();
   }, [fetchUserProfileAndRoles]);
 
-  // Realtime-подписка на новые уведомления
+  // Realtime-подписка на новые уведомления с подгрузкой имени отправителя
   useEffect(() => {
     if (!session?.user?.id) return;
     const channel = supabase
@@ -146,9 +173,10 @@ export function AuthProvider({ children }) {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${session.user.id}` },
-        (payload) => {
-          setNotifications((prev) => [payload.new, ...prev]);
-          if (payload.new.type === 'chat_message') {
+        async (payload) => {
+          const [enrichedNew] = await enrichNotificationsWithSenders([payload.new]);
+          setNotifications((prev) => [enrichedNew || payload.new, ...prev]);
+          if (payload.new.type === 'chat_message' || payload.new.type === 'new_message') {
             setUnreadChatCount((c) => c + 1);
           }
         }
@@ -156,7 +184,7 @@ export function AuthProvider({ children }) {
       .subscribe();
 
     return () => supabase.removeChannel(channel);
-  }, [session?.user?.id]);
+  }, [session?.user?.id, enrichNotificationsWithSenders]);
 
   const markNotificationsRead = async () => {
     if (!session?.user?.id) return;
@@ -168,7 +196,6 @@ export function AuthProvider({ children }) {
       .is('read_at', null);
 
     setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at || now })));
-    setUnreadChatCount(0);
   };
 
   const hasRole = (checkRoles) => {

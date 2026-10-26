@@ -39,7 +39,8 @@ export default function AppShell() {
 
   const unreadNotifCount = visibleNotifs.filter((n) => !n.read_at).length;
 
-  const handleDeleteOneNotif = async (id) => {
+  const handleDeleteOneNotif = async (id, e) => {
+    e?.stopPropagation();
     setDeletedNotifIds((prev) => [...prev, id]);
     await supabase.from('notifications').update({ deleted_at: new Date().toISOString() }).eq('id', id);
   };
@@ -163,9 +164,9 @@ export default function AppShell() {
               )}
             </button>
 
-            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ С ОТОБРАЖЕНИЕМ ИМЕНИ И АВАТАРА ОТПРАВИТЕЛЯ */}
+            {/* ВЫПАДАЮЩИЙ ЦЕНТР УВЕДОМЛЕНИЙ С НАСТОЯЩИМ ИМЕНЕМ И АВАТАРОМ ОТПРАВИТЕЛЯ */}
             {notifOpen && (
-              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#080d1a]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3">
+              <div className="absolute right-0 top-12 w-[calc(100vw-2rem)] sm:w-96 max-w-sm bg-[#080d1a]/95 backdrop-blur-2xl border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.8)] p-4 z-50 space-y-3 rounded-xl">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <span className="font-mono text-[10px] uppercase tracking-widest text-[#FFAA00]">
                     Уведомления ({visibleNotifs.length})
@@ -186,7 +187,7 @@ export default function AppShell() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => setNotifFilter('all')}
-                    className={`px-2.5 py-1 font-mono text-[10px] uppercase border ${
+                    className={`px-2.5 py-1 font-mono text-[10px] uppercase border rounded ${
                       notifFilter === 'all' ? 'border-[#00C853] text-[#34D399]' : 'border-white/10 text-[#8A93A6]'
                     }`}
                   >
@@ -194,7 +195,7 @@ export default function AppShell() {
                   </button>
                   <button
                     onClick={() => setNotifFilter('unread')}
-                    className={`px-2.5 py-1 font-mono text-[10px] uppercase border ${
+                    className={`px-2.5 py-1 font-mono text-[10px] uppercase border rounded ${
                       notifFilter === 'unread' ? 'border-[#FFAA00] text-[#FFAA00]' : 'border-white/10 text-[#8A93A6]'
                     }`}
                   >
@@ -206,39 +207,56 @@ export default function AppShell() {
                   {visibleNotifs.length === 0 ? (
                     <div className="text-xs text-[#8A93A6] py-6 text-center font-mono">Нет уведомлений</div>
                   ) : (
-                    visibleNotifs.map((n) => (
-                      <div
-                        key={n.id}
-                        className="p-2.5 border border-white/10 bg-[#050810]/70 text-xs flex items-start justify-between gap-2.5"
-                      >
-                        <div className="flex items-start gap-2.5 min-w-0">
-                          {/* Аватар отправителя */}
-                          <Avatar
-                            src={n.sender_avatar}
-                            username={n.sender_name || '@система'}
-                            size="sm"
-                          />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                              <span className="text-[#FFAA00] font-semibold truncate">
-                                {n.sender_name || 'Участник'}
-                              </span>
-                              <span className="text-[#34D399] uppercase text-[9px]">({n.type})</span>
-                            </div>
-                            <div className="text-zinc-300 mt-0.5 break-words">
-                              {n.payload?.preview || n.payload?.title || 'Новое событие платформы'}
+                    visibleNotifs.map((n) => {
+                      const senderDisplay =
+                        n.sender_name ||
+                        n.payload?.sender_name ||
+                        n.sender_username ||
+                        'Система Югра.Нефть';
+
+                      return (
+                        <div
+                          key={n.id}
+                          onClick={() => {
+                            if (n.payload?.chat_id) {
+                              navigate(`/chat?room=${n.payload.chat_id}`);
+                              setNotifOpen(false);
+                            }
+                          }}
+                          className="p-2.5 rounded-lg border border-white/10 bg-[#050810]/80 hover:border-[#00C853]/50 text-xs flex items-start justify-between gap-2.5 cursor-pointer transition-all"
+                        >
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <Avatar
+                              src={n.sender_avatar}
+                              username={senderDisplay}
+                              size="sm"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                                <span className="text-[#FFAA00] font-bold truncate">
+                                  {senderDisplay}
+                                </span>
+                                {n.sender_username && n.sender_username !== senderDisplay && (
+                                  <span className="text-[#34D399] text-[10px] truncate">
+                                    ({n.sender_username})
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-zinc-200 mt-0.5 break-words">
+                                {n.payload?.preview || n.payload?.title || 'Новое сообщение в чате'}
+                              </div>
                             </div>
                           </div>
+                          <button
+                            onClick={(e) => handleDeleteOneNotif(n.id, e)}
+                            className="text-[#8A93A6] hover:text-red-400 p-1 shrink-0"
+                            title="Удалить"
+                          >
+                            <X size={13} />
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleDeleteOneNotif(n.id)}
-                          className="text-[#8A93A6] hover:text-red-400 p-1 shrink-0"
-                          title="Удалить"
-                        >
-                          <X size={13} />
-                        </button>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -259,7 +277,7 @@ export default function AppShell() {
         </div>
       </header>
 
-      {/* МОБИЛЬНАЯ ВЫЕЗДНАЯ ШТОРКА (БОКОВОЕ МЕНЮ) */}
+      {/* МОБИЛЬНАЯ ВЫЕЗДНАЯ ШТОРКА */}
       {mobileDrawerOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div
@@ -346,7 +364,9 @@ export default function AppShell() {
               <Icon size={18} />
               <span className="font-mono text-[9px] uppercase tracking-wider mt-0.5">{item.label}</span>
               {item.badge > 0 && (
-                <span className="absolute top-0 right-1 w-2.5 h-2.5 bg-[#FFAA00] rounded-full" />
+                <span className="absolute top-0 right-1 px-1 min-w-[14px] h-[14px] bg-[#FFAA00] text-[#050810] font-mono text-[8px] font-bold rounded-full flex items-center justify-center">
+                  {item.badge}
+                </span>
               )}
             </NavLink>
           );

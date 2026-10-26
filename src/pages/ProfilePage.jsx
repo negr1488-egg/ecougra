@@ -33,7 +33,7 @@ import {
   School,
   ExternalLink,
   Share2,
-  GitCommit,
+  Trees,
   CheckCircle2,
   Lock
 } from 'lucide-react';
@@ -45,14 +45,15 @@ const STATUS_OPTIONS = [
   { value: 'offline', label: 'Невидимка (Офлайн)', color: 'zinc' }
 ];
 
-const MILESTONES_TREE = [
-  { level: 1, title: 'Юный натуралист Югры', xpReq: 0, perk: 'Доступ к чатам, базе знаний и обучающим курсам' },
-  { level: 5, title: 'Исследователь тайги', xpReq: 1000, perk: 'Право подачи инженерных и экологических проектов' },
-  { level: 10, title: 'Эко-технолог промысла', xpReq: 2500, perk: 'Доступ к интерактивным 3D-симуляторам бурения' },
-  { level: 20, title: 'Инженер-эколог ХМАО', xpReq: 5000, perk: 'Генерация официального PDF-сертификата отличия' },
-  { level: 30, title: 'Хранитель недр Самотлора', xpReq: 7500, perk: 'Право голосовать за проекты в экспертном совете' },
-  { level: 40, title: 'Архитектор Зелёной Югры', xpReq: 10000, perk: 'Золотая рамка профиля и статус Наставника' },
-  { level: 50, title: 'Легенда Нефтяного края', xpReq: 12500, perk: 'Высшая награда Оргкомитета региона' }
+// Плоды на растущем дереве Югры (с координатами на кроне дерева)
+const TREE_FRUITS = [
+  { id: 1, level: 1, title: 'Семя Первопроходца', xpReq: 0, perk: 'Доступ к чатам, базе знаний и обучающим курсам', cx: 200, cy: 235, color: '#34D399' },
+  { id: 2, level: 5, title: 'Плод Тайги', xpReq: 500, perk: 'Право подачи инженерных и экологических проектов', cx: 135, cy: 195, color: '#00C853' },
+  { id: 3, level: 10, title: 'Янтарная Смола', xpReq: 1500, perk: 'Доступ к интерактивным 3D-симуляторам бурения', cx: 265, cy: 190, color: '#FFAA00' },
+  { id: 4, level: 20, title: 'Изумрудный Побег', xpReq: 3000, perk: 'Генерация официального PDF-сертификата отличия', cx: 115, cy: 135, color: '#22D3EE' },
+  { id: 5, level: 30, title: 'Шишка Самотлора', xpReq: 5000, perk: 'Право голосовать за проекты в экспертном совете', cx: 285, cy: 130, color: '#FFAA00' },
+  { id: 6, level: 40, title: 'Золотой Плод Югры', xpReq: 8000, perk: 'Золотая рамка профиля и статус Наставника', cx: 155, cy: 85, color: '#FFD700' },
+  { id: 7, level: 50, title: 'Звезда Нефтяного Края', xpReq: 12000, perk: 'Высшая награда Оргкомитета региона', cx: 200, cy: 50, color: '#FF5252' }
 ];
 
 export default function ProfilePage() {
@@ -65,6 +66,7 @@ export default function ProfilePage() {
   const [activeTab, setActiveTab] = useState('wall'); // wall | tree | projects | activity
   const [wallContent, setWallContent] = useState('');
   const [wallLink, setWallLink] = useState('');
+  const [selectedFruit, setSelectedFruit] = useState(TREE_FRUITS[0]);
 
   const [openCommentsPostId, setOpenCommentsPostId] = useState(null);
   const [commentInput, setCommentInput] = useState('');
@@ -98,7 +100,7 @@ export default function ProfilePage() {
 
   // Загружаем профиль
   const { data: profileBundle, isLoading } = useQuery({
-    queryKey: ['profile_bundle_v16', username || myProfile?.id],
+    queryKey: ['profile_bundle_v17', username || myProfile?.id],
     enabled: Boolean(username || myProfile?.id),
     queryFn: async () => {
       let target = myProfile;
@@ -151,9 +153,9 @@ export default function ProfilePage() {
     profileBundle?.highestRole?.name === 'admin' ||
     profileBundle?.highestRole?.name === 'dev';
 
-  // 1. ЗАГРУЗКА wall_posts + wall_comments + wall_likes (ИЗ СУЩЕСТВУЮЩЕЙ ТАБЛИЦЫ wall_likes)
+  // ЗАГРУЗКА wall_posts + wall_comments + wall_likes
   const { data: wallPosts = [], isLoading: wallLoading } = useQuery({
-    queryKey: ['profile_wall_posts_v16', targetProfile?.id, user?.id],
+    queryKey: ['profile_wall_posts_v17', targetProfile?.id, user?.id],
     enabled: Boolean(targetProfile?.id),
     queryFn: async () => {
       try {
@@ -193,13 +195,19 @@ export default function ProfilePage() {
     }
   });
 
-  // Лайк поста через существующую таблицу wall_likes (постоянный, уникальный, снимается повторным нажатием)
+  // Безопасный лайк поста через таблицу wall_likes (без ошибки duplicate key)
   const toggleLikeMutation = useMutation({
     mutationFn: async (post) => {
       if (!user?.id) throw new Error('Требуется авторизация');
       checkRateLimit('wall_like_toggle', 300);
 
-      if (post.isLiked) {
+      const { data: existingLike } = await supabase
+        .from('wall_likes')
+        .select('*')
+        .match({ post_id: post.id, user_id: user.id })
+        .maybeSingle();
+
+      if (existingLike || post.isLiked) {
         const { error } = await supabase
           .from('wall_likes')
           .delete()
@@ -209,12 +217,14 @@ export default function ProfilePage() {
         const { error } = await supabase
           .from('wall_likes')
           .insert([{ post_id: post.id, user_id: user.id }]);
-        if (error) throw error;
+        if (error && !error.message?.includes('duplicate key') && !error.message?.includes('wall_likes_pkey')) {
+          throw error;
+        }
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v17', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
     },
     onError: (err) => toast(err.message, 'error')
   });
@@ -246,8 +256,8 @@ export default function ProfilePage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v17', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
       setWallContent('');
       setWallLink('');
       toast('Запись опубликована на стене! (+20 XP)', 'success');
@@ -271,7 +281,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v17', targetProfile?.id] });
       setCommentInput('');
       toast('Комментарий добавлен', 'success');
     },
@@ -285,7 +295,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v17', targetProfile?.id] });
       toast('Комментарий удалён', 'info');
     }
   });
@@ -297,8 +307,8 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v16', targetProfile?.id] });
-      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v11'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_wall_posts_v17', targetProfile?.id] });
+      queryClient.invalidateQueries({ queryKey: ['home_wall_posts_feed_v15'] });
       toast('Запись удалена со стены', 'info');
     },
     onError: (err) => toast(err.message, 'error')
@@ -340,7 +350,7 @@ export default function ProfilePage() {
       return foundMentor;
     },
     onSuccess: (mentor) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v17'] });
       if (refreshProfile) refreshProfile();
       setMentorInput('');
       toast(`Наставник ${mentor.username} привязан!`, 'success');
@@ -372,7 +382,7 @@ export default function ProfilePage() {
       return foundStudent;
     },
     onSuccess: (student) => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v17'] });
       setStudentInput('');
       toast(`Ученик ${student.username} привязан к вам!`, 'success');
     },
@@ -385,7 +395,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v17'] });
       toast('Ученик отвязан', 'info');
     }
   });
@@ -396,7 +406,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v17'] });
       if (refreshProfile) refreshProfile();
       toast('Наставник отвязан', 'info');
     }
@@ -423,7 +433,7 @@ export default function ProfilePage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v17'] });
       if (refreshProfile) refreshProfile();
       setEditOpen(false);
       toast('Анкета сохранена!', 'success');
@@ -438,7 +448,7 @@ export default function ProfilePage() {
       toast('Загрузка аватара...', 'info');
       const publicUrl = await uploadFileToStorage('avatars', user.id, file);
       await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user.id);
-      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v16'] });
+      queryClient.invalidateQueries({ queryKey: ['profile_bundle_v17'] });
       if (refreshProfile) refreshProfile();
       toast('Аватар обновлён!', 'success');
     } catch (err) {
@@ -453,6 +463,18 @@ export default function ProfilePage() {
   const level = Math.floor(userXp / 250) + 1;
   const badges = Array.isArray(targetProfile.badges) ? targetProfile.badges : ['Пионер Югры'];
   const userStatus = STATUS_OPTIONS.find((s) => s.value === targetProfile.status) || STATUS_OPTIONS[0];
+
+  // Вычисляем стадию роста дерева от XP (масштаб от 0.55 до 1.08)
+  const unlockedFruitsCount = TREE_FRUITS.filter((f) => userXp >= f.xpReq).length;
+  const treeScale = Math.min(1.06, 0.58 + (unlockedFruitsCount / TREE_FRUITS.length) * 0.48);
+  const treeStageName =
+    unlockedFruitsCount <= 2
+      ? 'Молодой саженец Югры'
+      : unlockedFruitsCount <= 4
+      ? 'Окрепший таёжный кедр'
+      : unlockedFruitsCount <= 6
+      ? 'Плодоносящее древо промысла'
+      : 'Вековой исполин Зелёной Югры';
 
   return (
     <div className="space-y-8">
@@ -756,7 +778,7 @@ export default function ProfilePage() {
           </Card>
         </div>
 
-        {/* ПРАВАЯ КОЛОНКА: СТЕНА + ИНТЕГРИРОВАННОЕ ДЕРЕВО РАЗВИТИЯ + ПРОЕКТЫ + ИСТОРИЯ */}
+        {/* ПРАВАЯ КОЛОНКА: СТЕНА + РАСТУЩЕЕ ДЕРЕВО С ПЛОДАМИ + ПРОЕКТЫ + ИСТОРИЯ */}
         <div className="lg:col-span-8 space-y-5">
           <div className="flex flex-wrap items-center gap-2 border-b border-white/10 pb-3">
             <button
@@ -770,7 +792,6 @@ export default function ProfilePage() {
               <MessageCircle size={14} /> Стена профиля ({wallPosts.length})
             </button>
 
-            {/* ИНТЕГРИРОВАННАЯ ВКЛАДКА ДЕРЕВА УРОВНЯ */}
             <button
               onClick={() => setActiveTab('tree')}
               className={`px-4 py-2 font-mono text-xs uppercase rounded border transition-all flex items-center gap-1.5 ${
@@ -779,7 +800,7 @@ export default function ProfilePage() {
                   : 'border-white/10 text-[#8A93A6] hover:text-white'
               }`}
             >
-              <GitCommit size={14} /> Дерево развития
+              <Trees size={14} /> Древо Югры ({unlockedFruitsCount}/{TREE_FRUITS.length})
             </button>
 
             <button
@@ -805,7 +826,7 @@ export default function ProfilePage() {
             </button>
           </div>
 
-          {/* ВКЛАДКА: СТЕНА ПРОФИЛЯ + КОММЕНТАРИИ */}
+          {/* ВКЛАДКА: СТЕНА ПРОФИЛЯ */}
           {activeTab === 'wall' && (
             <div className="space-y-4">
               {isOwnProfile && (
@@ -895,8 +916,7 @@ export default function ProfilePage() {
                       )}
 
                       <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-[#8A93A6]">
-                        <div className="flex items-center gap-3">
-                          {/* ПОСТОЯННЫЙ ЛАЙК: СОХРАНЯЕТСЯ В wall_likes, СНИМАЕТСЯ ПОВТОРНЫМ КЛИКОМ */}
+                        <div className="flex items-center gap-2.5">
                           <button
                             onClick={() => toggleLikeMutation.mutate(post)}
                             disabled={toggleLikeMutation.isPending}
@@ -911,11 +931,18 @@ export default function ProfilePage() {
                             <span>{post.likes_count || 0}</span>
                           </button>
 
+                          {/* ТОЛЬКО ЗНАЧОК КОММЕНТАРИЕВ И ЧИСЛО (БЕЗ НАДПИСИ) */}
                           <button
                             onClick={() => setOpenCommentsPostId(isCommentsOpen ? null : post.id)}
-                            className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors"
+                            className={`px-3 py-1 rounded border font-mono text-xs flex items-center gap-1.5 transition-all ${
+                              isCommentsOpen
+                                ? 'border-[#22D3EE] bg-[#22D3EE]/15 text-[#22D3EE]'
+                                : 'border-white/10 text-zinc-300 hover:text-white hover:border-white/30'
+                            }`}
+                            title="Открыть комментарии"
                           >
-                            <MessageSquare size={13} /> {comments.length} комментариев
+                            <MessageSquare size={13} />
+                            <span>{comments.length}</span>
                           </button>
                         </div>
                         <span>Стена исследователя</span>
@@ -987,61 +1014,212 @@ export default function ProfilePage() {
             </div>
           )}
 
-          {/* ИНТЕГРИРОВАННОЕ ВИЗУАЛЬНОЕ ДЕРЕВО РАЗВИТИЯ УРОВНЯ В ПРОФИЛЕ */}
+          {/* НАСТОЯЩЕЕ РАСТУЩЕЕ ДЕРЕВО С ПЛОДАМИ (КЕДР ЮГРЫ) */}
           {activeTab === 'tree' && (
-            <Card className="p-6 sm:p-8 border-white/10 bg-[#060a14] space-y-6">
-              <div className="border-b border-white/10 pb-4">
-                <div className="eyebrow">Карьерная лестница и статус исследователя ХМАО</div>
-                <h2 className="text-xl sm:text-2xl font-light text-white flex items-center gap-2.5 mt-1">
-                  <GitCommit size={22} className="text-[#34D399]" />
-                  Дерево развития рангов и уровней
-                </h2>
-                <p className="text-xs text-[#8A93A6] mt-1">
-                  Текущий опыт: <strong className="text-[#34D399] font-mono">{userXp} XP</strong>. 
-                  Вехи активируются по мере публикации отчётов, прохождения курсов и ежедневной серии.
-                </p>
+            <Card className="p-6 sm:p-8 border-[#00C853]/30 bg-gradient-to-b from-[#061217] via-[#050a12] to-[#04070d] space-y-6 relative overflow-hidden">
+              {/* Заголовок и прогресс */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                <div>
+                  <div className="eyebrow">Живая экосистема прогресса ХМАО-Югры</div>
+                  <h2 className="text-xl sm:text-2xl font-semibold text-white flex items-center gap-2.5 mt-1">
+                    <Trees size={22} className="text-[#00C853]" />
+                    {treeStageName}
+                  </h2>
+                  <p className="text-xs text-[#8A93A6] mt-1">
+                    Дерево растёт по мере накопления опыта и приносит плоды-награды. Нажмите на любой плод на кроне!
+                  </p>
+                </div>
+                <div className="text-left sm:text-right font-mono">
+                  <div className="text-lg font-bold text-[#34D399]">{userXp} XP</div>
+                  <div className="text-[11px] text-[#FFAA00]">
+                    Созрело плодов: {unlockedFruitsCount} из {TREE_FRUITS.length}
+                  </div>
+                </div>
               </div>
 
-              <div className="relative pl-6 sm:pl-8 space-y-8 before:absolute before:left-3 sm:before:left-4 before:top-3 before:bottom-3 before:w-0.5 before:bg-gradient-to-b before:from-[#00C853] before:via-[#FFAA00] before:to-white/10">
-                {MILESTONES_TREE.map((step) => {
-                  const isUnlocked = userXp >= step.xpReq;
-                  return (
-                    <div key={step.level} className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-3 group">
-                      <div
-                        className={`absolute -left-6 sm:-left-8 top-1.5 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
-                          isUnlocked
-                            ? 'border-[#00C853] bg-[#00C853]/20 text-[#34D399] shadow-[0_0_12px_#00C853]'
-                            : 'border-white/20 bg-[#050810] text-[#8A93A6]'
-                        }`}
-                      >
-                        {isUnlocked ? <CheckCircle2 size={13} /> : <Lock size={11} />}
-                      </div>
+              {/* Визуальная сцена с растущим SVG-Деревом и интерактивными плодами */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
+                <div className="md:col-span-7 relative flex items-center justify-center bg-[#03060c]/90 rounded-2xl border border-white/10 p-4 min-h-[360px] overflow-hidden shadow-inner">
+                  {/* Фоновое северное сияние */}
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 w-72 h-40 bg-[#00C853]/15 blur-3xl rounded-full pointer-events-none" />
+                  <div className="absolute bottom-0 inset-x-0 h-12 bg-gradient-to-t from-[#092218]/60 to-transparent pointer-events-none" />
 
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-[#FFAA00]">
-                            LVL {step.level}
-                          </span>
-                          <h3 className={`text-sm font-medium ${isUnlocked ? 'text-white' : 'text-[#8A93A6]'}`}>
-                            {step.title}
-                          </h3>
-                          <Badge color={isUnlocked ? 'emerald' : 'zinc'}>
-                            {isUnlocked ? 'Достигнуто' : `${step.xpReq} XP`}
-                          </Badge>
+                  <svg
+                    viewBox="0 0 400 340"
+                    className="w-full max-w-[380px] h-auto select-none transition-transform duration-700"
+                    style={{
+                      transform: `scale(${treeScale})`,
+                      transformOrigin: '200px 310px'
+                    }}
+                  >
+                    <defs>
+                      <radialGradient id="canopyGlow" cx="50%" cy="45%" r="55%">
+                        <stop offset="0%" stopColor="#34D399" stopOpacity="0.35" />
+                        <stop offset="60%" stopColor="#00C853" stopOpacity="0.15" />
+                        <stop offset="100%" stopColor="#050810" stopOpacity="0" />
+                      </radialGradient>
+                      <linearGradient id="trunkGrad" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#4A2E1B" />
+                        <stop offset="50%" stopColor="#6E472B" />
+                        <stop offset="100%" stopColor="#3B2313" />
+                      </linearGradient>
+                      <linearGradient id="foliage1" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#10B981" />
+                        <stop offset="100%" stopColor="#047857" />
+                      </linearGradient>
+                      <linearGradient id="foliage2" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#34D399" />
+                        <stop offset="100%" stopColor="#059669" />
+                      </linearGradient>
+                    </defs>
+
+                    {/* Сияние кроны */}
+                    <circle cx="200" cy="145" r="135" fill="url(#canopyGlow)" />
+
+                    {/* Земля / Таёжный холм */}
+                    <path
+                      d="M40 315 Q200 285 360 315 L380 340 L20 340 Z"
+                      fill="#0c291e"
+                      stroke="#00C853"
+                      strokeOpacity="0.4"
+                      strokeWidth="1.5"
+                    />
+
+                    {/* Корни и мощный ствол кедра */}
+                    <path
+                      d="M165 315 Q182 290 186 240 L188 120 L212 120 L214 240 Q218 290 235 315 Z"
+                      fill="url(#trunkGrad)"
+                    />
+                    {/* Боковые ветви */}
+                    <path d="M192 220 Q150 205 125 190" stroke="#5c3a21" strokeWidth="7" strokeLinecap="round" fill="none" />
+                    <path d="M208 215 Q250 200 275 185" stroke="#5c3a21" strokeWidth="7" strokeLinecap="round" fill="none" />
+                    <path d="M194 165 Q145 150 115 135" stroke="#5c3a21" strokeWidth="5.5" strokeLinecap="round" fill="none" />
+                    <path d="M206 160 Q255 145 285 130" stroke="#5c3a21" strokeWidth="5.5" strokeLinecap="round" fill="none" />
+
+                    {/* Пышная многоярусная крона кедра */}
+                    <g opacity="0.95">
+                      {/* Нижний ярус хвои */}
+                      <ellipse cx="140" cy="200" rx="60" ry="38" fill="url(#foliage1)" />
+                      <ellipse cx="260" cy="195" rx="60" ry="38" fill="url(#foliage1)" />
+                      <ellipse cx="200" cy="210" rx="75" ry="42" fill="url(#foliage2)" />
+
+                      {/* Средний ярус хвои */}
+                      <ellipse cx="130" cy="145" rx="55" ry="36" fill="url(#foliage2)" />
+                      <ellipse cx="270" cy="140" rx="55" ry="36" fill="url(#foliage2)" />
+                      <ellipse cx="200" cy="150" rx="72" ry="45" fill="url(#foliage1)" />
+
+                      {/* Верхний ярус и верхушка */}
+                      <ellipse cx="165" cy="95" rx="48" ry="34" fill="url(#foliage2)" />
+                      <ellipse cx="235" cy="95" rx="48" ry="34" fill="url(#foliage2)" />
+                      <ellipse cx="200" cy="70" rx="52" ry="38" fill="url(#foliage2)" />
+                    </g>
+
+                    {/* ИНТЕРАКТИВНЫЕ ПЛОДЫ НА ВЕТВЯХ ДЕРЕВА */}
+                    {TREE_FRUITS.map((fruit) => {
+                      const isRipe = userXp >= fruit.xpReq;
+                      const isSelected = selectedFruit?.id === fruit.id;
+
+                      return (
+                        <g
+                          key={fruit.id}
+                          onClick={() => setSelectedFruit(fruit)}
+                          className="cursor-pointer transition-transform"
+                        >
+                          {/* Пульсирующий ореол для созревшего плода */}
+                          {isRipe && (
+                            <circle
+                              cx={fruit.cx}
+                              cy={fruit.cy}
+                              r={isSelected ? 22 : 17}
+                              fill={fruit.color}
+                              opacity={isSelected ? 0.35 : 0.2}
+                            />
+                          )}
+
+                          {/* Сам плод */}
+                          <circle
+                            cx={fruit.cx}
+                            cy={fruit.cy}
+                            r={isSelected ? 14 : 11}
+                            fill={isRipe ? fruit.color : '#111827'}
+                            stroke={isSelected ? '#FFFFFF' : isRipe ? '#FEF08A' : '#4B5563'}
+                            strokeWidth={isSelected ? 3 : 2}
+                          />
+
+                          {/* Блик или уровень внутри плода */}
+                          <text
+                            x={fruit.cx}
+                            y={fruit.cy + 3.5}
+                            textAnchor="middle"
+                            fill={isRipe ? '#050810' : '#9CA3AF'}
+                            fontSize="9"
+                            fontWeight="bold"
+                            fontFamily="monospace"
+                          >
+                            {fruit.level}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+
+                  <div className="absolute bottom-2.5 left-4 right-4 flex justify-between items-center text-[10px] font-mono text-[#8A93A6]">
+                    <span>Масштаб роста: {Math.round(treeScale * 100)}%</span>
+                    <span className="text-[#34D399]">● Цветной плод — созрел</span>
+                  </div>
+                </div>
+
+                {/* Правая панель: выбранный плод и список всех плодов */}
+                <div className="md:col-span-5 space-y-4">
+                  {selectedFruit && (
+                    <div className="p-4 rounded-xl border border-[#FFAA00]/40 bg-[#050810] space-y-2.5 shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <Badge color={userXp >= selectedFruit.xpReq ? 'emerald' : 'zinc'}>
+                          {userXp >= selectedFruit.xpReq ? '🍎 Плод созрел' : `🔒 Требуется ${selectedFruit.xpReq} XP`}
+                        </Badge>
+                        <span className="font-mono text-xs text-[#FFAA00] font-bold">
+                          Уровень {selectedFruit.level}
+                        </span>
+                      </div>
+                      <h3 className="text-base font-semibold text-white">{selectedFruit.title}</h3>
+                      <p className="text-xs text-zinc-300 leading-relaxed">{selectedFruit.perk}</p>
+                      {userXp < selectedFruit.xpReq && (
+                        <div className="pt-1 font-mono text-[11px] text-[#8A93A6]">
+                          До созревания плода осталось: <strong className="text-white">{selectedFruit.xpReq - userXp} XP</strong>
                         </div>
-                        <div className="text-xs text-[#8A93A6]">{step.perk}</div>
-                      </div>
-
-                      <div className="font-mono text-[11px] text-right shrink-0">
-                        {isUnlocked ? (
-                          <span className="text-[#34D399]">Разблокировано</span>
-                        ) : (
-                          <span className="text-[#8A93A6]">Осталось: {Math.max(0, step.xpReq - userXp)} XP</span>
-                        )}
-                      </div>
+                      )}
                     </div>
-                  );
-                })}
+                  )}
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {TREE_FRUITS.map((f) => {
+                      const unlocked = userXp >= f.xpReq;
+                      const active = selectedFruit?.id === f.id;
+                      return (
+                        <div
+                          key={f.id}
+                          onClick={() => setSelectedFruit(f)}
+                          className={`p-2.5 rounded-lg border flex items-center justify-between cursor-pointer transition-all text-xs ${
+                            active
+                              ? 'border-[#00C853] bg-[#00C853]/15 text-white'
+                              : 'border-white/5 bg-[#050810]/70 text-zinc-300 hover:border-white/20'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 truncate">
+                            <span
+                              className="w-3 h-3 rounded-full shrink-0"
+                              style={{ backgroundColor: unlocked ? f.color : '#374151' }}
+                            />
+                            <span className="font-medium truncate">{f.title}</span>
+                          </div>
+                          <span className="font-mono text-[10px] text-[#FFAA00] shrink-0 ml-2">
+                            {unlocked ? 'Созрел ✓' : `${f.xpReq} XP`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </Card>
           )}
