@@ -161,7 +161,7 @@ export default function ChatPage() {
       return chatId;
     },
     onSuccess: (deletedId) => {
-      queryClient.invalidateQueries({ queryKey: ['chats_list_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['chats_list_v13'] });
       if (activeChatId === deletedId) {
         setActiveChatId(DEFAULT_CHATS[0].id);
       }
@@ -172,7 +172,7 @@ export default function ChatPage() {
 
   // 1. Загрузка списка комнат со строгой дедупликацией
   const { data: chats = DEFAULT_CHATS } = useQuery({
-    queryKey: ['chats_list_v12', user?.id],
+    queryKey: ['chats_list_v13', user?.id],
     queryFn: async () => {
       try {
         const { data, error } = await supabase
@@ -208,7 +208,7 @@ export default function ChatPage() {
 
   // 2. Точный подсчёт непрочитанных сообщений по каждому чату
   const { data: allRecentMessages = [] } = useQuery({
-    queryKey: ['chat_unread_counts_v12', user?.id],
+    queryKey: ['chat_unread_counts_v13', user?.id],
     enabled: Boolean(user?.id),
     queryFn: async () => {
       const { data } = await supabase
@@ -239,7 +239,7 @@ export default function ChatPage() {
 
   // 3. Загрузка профилей
   const { data: allProfiles = [] } = useQuery({
-    queryKey: ['chat_all_profiles_with_roles_v12'],
+    queryKey: ['chat_all_profiles_with_roles_v13'],
     queryFn: async () => {
       const [profRes, urRes] = await Promise.all([
         supabase.from('profiles').select('id, username, full_name, avatar_url, status, xp, is_banned, mentor_id'),
@@ -271,7 +271,7 @@ export default function ChatPage() {
 
   // 4. Загрузка сообщений активного чата
   const { data: rawMessages = [] } = useQuery({
-    queryKey: ['chat_messages_v12', activeChatId],
+    queryKey: ['chat_messages_v13', activeChatId],
     enabled: Boolean(activeChatId),
     queryFn: async () => {
       try {
@@ -301,9 +301,9 @@ export default function ChatPage() {
 
     channel
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => {
-        queryClient.invalidateQueries({ queryKey: ['chat_messages_v12', activeChatId] });
-        queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v12'] });
-        queryClient.invalidateQueries({ queryKey: ['chats_list_v12'] });
+        queryClient.invalidateQueries({ queryKey: ['chat_messages_v13', activeChatId] });
+        queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v13'] });
+        queryClient.invalidateQueries({ queryKey: ['chats_list_v13'] });
         markChatAsRead(activeChatId);
       })
       .on('presence', { event: 'sync' }, () => {
@@ -359,7 +359,7 @@ export default function ChatPage() {
           .eq('id', roomId)
           .eq('title', 'Личный диалог');
 
-        await queryClient.invalidateQueries({ queryKey: ['chats_list_v12'] });
+        await queryClient.invalidateQueries({ queryKey: ['chats_list_v13'] });
         setActiveChatId(roomId);
         setSidebarTab('chats');
       }
@@ -403,7 +403,7 @@ export default function ChatPage() {
 
         await supabase.from('chat_members').upsert(memberRows, { onConflict: 'chat_id,user_id' });
 
-        await queryClient.invalidateQueries({ queryKey: ['chats_list_v12'] });
+        await queryClient.invalidateQueries({ queryKey: ['chats_list_v13'] });
         setActiveChatId(createdChat.id);
         setSidebarTab('chats');
         setNewChatModal(false);
@@ -447,8 +447,8 @@ export default function ChatPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v12', activeChatId] });
-      queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v13', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_unread_counts_v13'] });
       markChatAsRead(activeChatId);
       setText('');
       setEditingMsg(null);
@@ -477,7 +477,7 @@ export default function ChatPage() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v12', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v13', activeChatId] });
       toast('Сообщение удалено', 'info');
     },
     onError: (err) => toast(err.message, 'error')
@@ -494,7 +494,7 @@ export default function ChatPage() {
       return nextBan;
     },
     onSuccess: (nextBan) => {
-      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v12'] });
+      queryClient.invalidateQueries({ queryKey: ['chat_all_profiles_with_roles_v13'] });
       toast(nextBan ? 'Пользователь заблокирован в чате' : 'Блокировка снята', 'info');
     },
     onError: (err) => toast(err.message, 'error')
@@ -538,12 +538,12 @@ export default function ChatPage() {
     setReactionMenuMsgId(null);
 
     await supabase.from('chat_messages').update({ reactions: updated }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v12', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v13', activeChatId] });
   };
 
   const togglePinMessage = async (msg) => {
     await supabase.from('chat_messages').update({ is_pinned: !msg.is_pinned }).eq('id', msg.id);
-    queryClient.invalidateQueries({ queryKey: ['chat_messages_v12', activeChatId] });
+    queryClient.invalidateQueries({ queryKey: ['chat_messages_v13', activeChatId] });
     toast(msg.is_pinned ? 'Сообщение откреплено' : '📌 Закреплено в шапке канала', 'info');
   };
 
@@ -561,7 +561,7 @@ export default function ChatPage() {
           attachments: [{ name: file.name, url, type: file.type }]
         }
       ]);
-      queryClient.invalidateQueries({ queryKey: ['chat_messages_v12', activeChatId] });
+      queryClient.invalidateQueries({ queryKey: ['chat_messages_v13', activeChatId] });
       toast('Файл успешно отправлен!', 'success');
     } catch (err) {
       toast(err.message, 'error');
